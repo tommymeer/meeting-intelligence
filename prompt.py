@@ -16,7 +16,6 @@ Tool schema:
 """
 
 import anthropic
-import json
 
 
 # ── Tool definitions ───────────────────────────────────────────────────────────
@@ -212,21 +211,21 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
     if decision_signals:
         lines.append("## DECISION SIGNALS (flagged by preprocessing)")
         lines.append("These sentences contain language associated with decisions. Evaluate each carefully.")
-        for i, s in enumerate(decision_signals[:20], 1):  # cap at 20
+        for i, s in enumerate(decision_signals[:20], 1):
             lines.append(f"{i}. {s['text']}")
         lines.append("")
 
     if commitments:
         lines.append("## COMMITMENT SIGNALS (flagged by preprocessing)")
         lines.append("These sentences contain language associated with assignments or commitments.")
-        for i, s in enumerate(commitments[:30], 1):  # cap at 30
+        for i, s in enumerate(commitments[:30], 1):
             lines.append(f"{i}. {s['text']}")
         lines.append("")
 
     if questions:
         lines.append("## QUESTIONS FLAGGED BY PREPROCESSING")
         lines.append("Evaluate which of these remain unresolved in the transcript.")
-        for i, q in enumerate(questions[:20], 1):  # cap at 20
+        for i, q in enumerate(questions[:20], 1):
             lines.append(f"{i}. {q}")
         lines.append("")
 
@@ -265,16 +264,17 @@ def parse_tool_calls(response) -> dict:
         "blockers": [],
         "open_questions": [],
         "followup_email": "",
-        "still_open": [],  # populated from prior_open_items cross-reference
+        "still_open": [],
     }
 
     for block in response.content:
-        print(f"DEBUG block type: {block.type}, name: {getattr(block, 'name', 'n/a')}")  # temp debug
+        print(f"DEBUG type={block.type} name={getattr(block, 'name', 'n/a')}")
         if block.type != "tool_use":
             continue
 
         name = block.name
-        inp = block.input  # already a dict from the SDK
+        inp = block.input
+        print(f"DEBUG tool={name} keys={list(inp.keys()) if inp else 'empty'}")
 
         if name == "create_decision":
             result["decisions"].append({
@@ -304,8 +304,10 @@ def parse_tool_calls(response) -> dict:
             })
 
         elif name == "draft_followup":
+            print(f"DEBUG draft_followup inp={inp}")
             result["followup_email"] = inp.get("email_text", "")
 
+    print(f"DEBUG final followup_email length={len(result['followup_email'])}")
     return result
 
 
@@ -314,9 +316,6 @@ def resolve_still_open(result: dict, prior_open_items: list) -> dict:
     Cross-reference prior open items against current open_items.
     Items from the prior session that don't appear resolved are surfaced
     in result['still_open'].
-
-    Heuristic: if a prior item's task text has low token overlap with any
-    current open item, it's likely still open.
     """
     if not prior_open_items:
         return result
@@ -328,11 +327,9 @@ def resolve_still_open(result: dict, prior_open_items: list) -> dict:
         for current in current_tasks:
             current_tokens = set(current.split())
             overlap = prior_tokens & current_tokens
-            # If >40% of prior task tokens appear in a current task, consider it carried forward
-            # (still open, not resolved)
             if len(prior_tokens) > 0 and len(overlap) / len(prior_tokens) > 0.4:
-                return False  # still open
-        return True  # resolved — not re-surfaced
+                return False
+        return True
 
     still_open = []
     for item in prior_open_items:
