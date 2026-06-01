@@ -341,16 +341,26 @@ def run_meeting_intelligence(
     preprocessed: dict,
     api_key: str,
     prior_open_items: list = None,
+    prior_context: list = None,
 ) -> tuple[dict, str | None]:
     """
-    Call Claude with tool use and return structured output.
-
-    Pass 1: extraction — decisions, action items, blockers, open questions.
-    Pass 2: forced draft_followup using structured output from Pass 1.
-
-    Returns (result_dict, error_message).
-    error_message is None on success.
+    `prior_context` accepts the richer format used by Phase 4 Supabase reads:
+    a list of session_results rows (each with an "open_items" key).
+    If provided, it is flattened into prior_open_items.
+    `prior_open_items` (flat list) is still accepted for in-session recurring mode.
     """
+    if prior_context and not prior_open_items:
+        # Flatten open_items from all prior sessions; deduplicate by task text
+        seen: set[str] = set()
+        flattened: list[dict] = []
+        for session in prior_context:
+            for item in session.get("open_items") or []:
+                key = (item.get("task") or "").strip().lower()
+                if key and key not in seen:
+                    flattened.append(item)
+                    seen.add(key)
+        prior_open_items = flattened
+
     prior_open_items = prior_open_items or []
 
     client = anthropic.Anthropic(api_key=api_key)
