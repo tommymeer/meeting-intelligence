@@ -186,8 +186,9 @@ Confidence scoring discipline:
 - Medium: strongly implied by context, role, or conversational flow.
 - Low: you are inferring — flag it honestly.
 
-Use the tools to record each item as you identify it. Call draft_followup last, \
-after all other tools have been called. Do not summarize or editorialize beyond what the transcript supports.\
+Use the tools to record each item as you identify it. You MUST call draft_followup as your \
+final tool call — this is required on every run without exception. \
+Do not summarize or editorialize beyond what the transcript supports.\
 """
 
 
@@ -368,7 +369,7 @@ def run_meeting_intelligence(
             max_tokens=8192,
             system=system_prompt,
             tools=TOOLS,
-            tool_choice={"type": "auto"},
+            tool_choice={"type": "any"},
             messages=[
                 {"role": "user", "content": user_prompt}
             ],
