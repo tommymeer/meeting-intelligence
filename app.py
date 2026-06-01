@@ -337,7 +337,13 @@ if st.session_state.recurring_mode:
     else:
         st.success("Cross-session tracking active for this series.")
 
-anon_mode = False
+anon_mode = st.toggle(
+    "Anonymize transcript before processing",
+    value=False,
+    help="Replaces names, company references, and financial figures with placeholders before sending to the AI. Recommended for sensitive meetings. Runs locally — no data leaves your machine during this step.",
+)
+if anon_mode:
+    st.caption("Names → Person A/B/C · Organizations → [Organization] · Financial figures → [REVENUE_FIGURE] / [PERCENTAGE] / etc.")
 
 st.divider()
 
@@ -376,7 +382,13 @@ if run_button:
         )
 
     with st.spinner("Preprocessing transcript..."):
-        preprocessed = preprocess_transcript(raw_text)
+        preprocessed = preprocess_transcript(raw_text, anonymize=anon_mode)
+
+    if anon_mode and preprocessed.get("entity_map"):
+        st.info(
+            f"🔒 Anonymization applied — "
+            f"{len(preprocessed['entity_map'])} entity replacement(s) made before sending to the AI."
+        )
 
     quality = preprocessed.get("quality", {})
     if quality.get("flagged"):
