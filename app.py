@@ -246,6 +246,7 @@ if persistence_available:
             st.session_state.series_name = series_name_input.strip()
         else:
             st.session_state.series_name = selected_option
+            st.session_state.recurring_mode = True
             st.markdown(f"**Selected:** {selected_option}")
 
     if st.session_state.series_name:
