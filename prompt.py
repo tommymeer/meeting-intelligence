@@ -185,8 +185,7 @@ Confidence scoring discipline:
 - Medium: strongly implied by context, role, or conversational flow.
 - Low: you are inferring — flag it honestly.
 
-Use the tools to record each item as you identify it. You MUST call draft_followup as your \
-final tool call — this is required on every run without exception. \
+Use the tools to record each item as you identify it. \
 Do not summarize or editorialize beyond what the transcript supports.\
 """
 
@@ -268,13 +267,11 @@ def parse_tool_calls(response) -> dict:
     }
 
     for block in response.content:
-        print(f"DEBUG type={block.type} name={getattr(block, 'name', 'n/a')}")
         if block.type != "tool_use":
             continue
 
         name = block.name
         inp = block.input
-        print(f"DEBUG tool={name} keys={list(inp.keys()) if inp else 'empty'}")
 
         if name == "create_decision":
             result["decisions"].append({
@@ -304,10 +301,8 @@ def parse_tool_calls(response) -> dict:
             })
 
         elif name == "draft_followup":
-            print(f"DEBUG draft_followup inp={inp}")
             result["followup_email"] = inp.get("email_text", "")
 
-    print(f"DEBUG final followup_email length={len(result['followup_email'])}")
     return result
 
 
@@ -350,6 +345,9 @@ def run_meeting_intelligence(
     """
     Call Claude with tool use and return structured output.
 
+    Pass 1: extraction — decisions, action items, blockers, open questions.
+    Pass 2: forced draft_followup using structured output from Pass 1.
+
     Returns (result_dict, error_message).
     error_message is None on success.
     """
@@ -360,6 +358,7 @@ def run_meeting_intelligence(
     system_prompt = build_system_prompt()
     user_prompt = build_user_prompt(preprocessed, prior_open_items)
 
+    # ── Pass 1: extraction ─────────────────────────────────────────────────────
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -381,6 +380,62 @@ def run_meeting_intelligence(
         return {}, f"Unexpected error: {e}"
 
     result = parse_tool_calls(response)
+
+    # ── Pass 2: force draft_followup ───────────────────────────────────────────
+    decisions_text = "\n".join(
+        f"- {d['description']} (Owner: {d.get('owner') or 'Unassigned'})"
+        for d in result["decisions"]
+    ) or "None identified."
+
+    open_items_text = "\n".join(
+        f"- {i['task']} (Owner: {i.get('owner') or 'Unassigned'}, Deadline: {i.get('deadline') or 'None'})"
+        for i in result["open_items"]
+    ) or "None identified."
+
+    blockers_text = "\n".join(
+        f"- [{b['severity']}] {b['description']}"
+        for b in result["blockers"]
+    ) or "None identified."
+
+    questions_text = "\n".join(
+        f"- {q['question']}"
+        for q in result["open_questions"]
+    ) or "None identified."
+
+    followup_prompt = f"""You are drafting a follow-up email for a meeting. \
+Use the structured analysis below to write a complete, ready-to-send email.
+
+DECISIONS MADE:
+{decisions_text}
+
+OPEN ITEMS:
+{open_items_text}
+
+BLOCKERS:
+{blockers_text}
+
+UNRESOLVED QUESTIONS:
+{questions_text}
+
+Draft a professional but direct follow-up email that covers all of the above. \
+Include a subject line. Keep it actionable and concise."""
+
+    try:
+        followup_response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            tools=TOOLS,
+            tool_choice={"type": "tool", "name": "draft_followup"},
+            messages=[
+                {"role": "user", "content": followup_prompt}
+            ],
+        )
+        for block in followup_response.content:
+            if block.type == "tool_use" and block.name == "draft_followup":
+                result["followup_email"] = block.input.get("email_text", "")
+                break
+    except Exception:
+        pass  # follow-up email is best-effort; don't fail the whole run
 
     if prior_open_items:
         result = resolve_still_open(result, prior_open_items)
