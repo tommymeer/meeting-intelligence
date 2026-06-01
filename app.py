@@ -392,17 +392,3 @@ if run_button:
             "Running this meeting weekly? Enable **Recurring Mode** above the Run button "
             "on your next upload to track open items across sessions."
         )
-
-# ── Confidence legend ─────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### Confidence Key")
-    st.markdown("🟢 **High** — explicitly stated in transcript")
-    st.markdown("🟡 **Medium** — strongly implied")
-    st.markdown("🔴 **Low** — inferred; review carefully")
-    st.divider()
-    st.markdown("### About")
-    st.markdown(
-        "Built by [Thomas Meerschwam](https://thomasmeerschwam.substack.com) "
-        "as part of an operator AI tools portfolio."
-    )
-    st.caption("v1.0 · Phase 1")
