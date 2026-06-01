@@ -181,9 +181,9 @@ with the task clearly described — do not fabricate an owner.
 - An OPEN QUESTION was raised and not answered. Rhetorical questions and answered questions don't count.
 
 Confidence scoring discipline:
-- High: the transcript says it explicitly and unambiguously.
-- Medium: strongly implied by context, role, or conversational flow.
-- Low: you are inferring — flag it honestly.
+- High: the transcript says it explicitly and unambiguously. The person stated it directly with no hedging.
+- Medium: strongly implied by context, role, or conversational flow. Includes hesitant acceptances ("I guess," "I can do that"), role-implied ownership, and deadlines inferred from context.
+- Low: you are inferring — ownership or commitment is genuinely ambiguous. Flag it honestly.
 
 Use the tools to record each item as you identify it. \
 Do not summarize or editorialize beyond what the transcript supports.\
