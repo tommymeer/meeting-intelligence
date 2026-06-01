@@ -268,6 +268,7 @@ def parse_tool_calls(response) -> dict:
     }
 
     for block in response.content:
+        print(f"DEBUG block type: {block.type}, name: {getattr(block, 'name', 'n/a')}")  # temp debug
         if block.type != "tool_use":
             continue
 
