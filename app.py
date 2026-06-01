@@ -128,7 +128,7 @@ def render_blockers(blockers: list):
     for b in blockers:
         severity = b.get("severity", "Medium")
         icon = "🔴" if severity == "High" else "🟡" if severity == "Medium" else "🟢"
-        st.markdown(f"{icon} **[{severity}]** {b['description']}")
+        st.write(f"{icon} **[{severity}]** {b['description']}")
 
 
 def render_open_questions(questions: list):
