@@ -268,109 +268,9 @@ def score_quality(text: str, word_count: int, speaker_count: int) -> dict:
     }
 
 
-# ── Anonymization ─────────────────────────────────────────────────────────────
-
-# Financial pattern replacements (regex, runs before spaCy)
-_FINANCIAL_PATTERNS = [
-    # Revenue / ARR / MRR figures: $47M, $2.3M ARR, $150K
-    (re.compile(
-        r'\$\s*\d+(?:[.,]\d+)*\s*(?:M|K|B|million|billion|thousand)?\b'
-        r'(?:\s*(?:ARR|MRR|ARR|revenue|burn|runway|contract|deal|raise|round))?',
-        re.IGNORECASE), '[REVENUE_FIGURE]'),
-    # Valuation: valued at $X, at a $X valuation
-    (re.compile(
-        r'(?:valued?\s+at|valuation\s+of|at\s+a)\s+\$\s*\d+(?:[.,]\d+)*\s*(?:M|K|B|million|billion)?',
-        re.IGNORECASE), '[VALUATION]'),
-    # Margin / growth / percentage figures: 23%, up 34%, margins at 18%
-    (re.compile(
-        r'\b\d+(?:\.\d+)?\s*%(?:\s*(?:margin|growth|increase|decrease|churn|retention|conversion|adoption))?',
-        re.IGNORECASE), '[PERCENTAGE]'),
-    # Headcount: 23 engineers, team of 45, 120 employees
-    (re.compile(
-        r'\b\d+\s*(?:engineers?|developers?|employees?|headcount|people|hires?|reps?|salespeople)\b',
-        re.IGNORECASE), '[HEADCOUNT]'),
-    # Runway: 18 months of runway
-    (re.compile(
-        r'\b\d+\s*months?\s+(?:of\s+)?runway\b',
-        re.IGNORECASE), '[RUNWAY]'),
-]
-
-
-def anonymize_transcript(text: str) -> tuple[str, dict]:
-    """
-    Anonymize sensitive entities in a transcript before it hits Claude.
-
-    Two passes:
-      1. Regex pass — replaces financial figures and metrics with labeled placeholders
-      2. spaCy NER pass — replaces person names, organizations, and products
-
-    Returns (anonymized_text, entity_map) where entity_map records replacements
-    so the user can map back if needed.
-    """
-    entity_map: dict[str, str] = {}
-
-    # ── Pass 1: financial regex ───────────────────────────────────────────────
-    for pattern, placeholder in _FINANCIAL_PATTERNS:
-        matches = pattern.findall(text)
-        for match in matches:
-            if match.strip() and match.strip() not in entity_map:
-                entity_map[match.strip()] = placeholder
-        text = pattern.sub(placeholder, text)
-
-    # ── Pass 2: spaCy NER ─────────────────────────────────────────────────────
-    try:
-        import spacy
-        try:
-            nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            # Model not available — skip NER, return financial-redacted text only
-            return text, entity_map
-
-        doc = nlp(text)
-
-        # Build ordered replacement map: longer matches first to avoid partial replacements
-        person_counter = 0
-        person_map: dict[str, str] = {}  # original name → Person A/B/C
-
-        replacements: list[tuple[int, int, str]] = []
-
-        for ent in doc.ents:
-            original = ent.text.strip()
-            if not original:
-                continue
-
-            if ent.label_ == "PERSON":
-                if original not in person_map:
-                    label = f"Person {chr(65 + person_counter)}"  # A, B, C...
-                    person_map[original] = label
-                    entity_map[original] = label
-                    person_counter += 1
-                replacements.append((ent.start_char, ent.end_char, person_map[original]))
-
-            elif ent.label_ in ("ORG", "COMPANY"):
-                replacements.append((ent.start_char, ent.end_char, "[Organization]"))
-                entity_map[original] = "[Organization]"
-
-            elif ent.label_ in ("PRODUCT", "WORK_OF_ART"):
-                replacements.append((ent.start_char, ent.end_char, "[Product]"))
-                entity_map[original] = "[Product]"
-
-        # Apply replacements in reverse order to preserve character offsets
-        replacements.sort(key=lambda x: x[0], reverse=True)
-        text_list = list(text)
-        for start, end, replacement in replacements:
-            text_list[start:end] = list(replacement)
-        text = "".join(text_list)
-
-    except ImportError:
-        pass  # spaCy not available — return financial-redacted text only
-
-    return text, entity_map
-
-
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-def preprocess_transcript(raw_text: str, anonymize: bool = False) -> dict:
+def preprocess_transcript(raw_text: str) -> dict:
     """
     Full preprocessing pipeline. Called by app.py before the Claude API call.
 
@@ -409,17 +309,12 @@ def preprocess_transcript(raw_text: str, anonymize: bool = False) -> dict:
     # Step 3: metadata from raw header (before normalization artifacts)
     metadata = extract_metadata(raw_text)
 
-    # Step 4: anonymization (optional — runs before Claude sees anything)
-    entity_map: dict = {}
-    if anonymize:
-        text, entity_map = anonymize_transcript(text)
-
-    # Step 5: extract signals from normalized (and optionally anonymized) text
+    # Step 4: extract signals from normalized text
     explicit_commitments = detect_explicit_commitments(text)
     decision_signals = detect_decision_signals(text)
     questions = extract_questions(text)
 
-    # Step 6: quality gate
+    # Step 5: quality gate
     wc = len(text.split())
     speaker_count = count_speakers(raw_text)  # use raw for speaker count
     quality = score_quality(text, wc, speaker_count)
@@ -432,6 +327,4 @@ def preprocess_transcript(raw_text: str, anonymize: bool = False) -> dict:
         "questions": questions,
         "speaker_map": speaker_map,
         "quality": quality,
-        "entity_map": entity_map,  # populated only when anonymize=True
-        "anonymized": anonymize,
     }
