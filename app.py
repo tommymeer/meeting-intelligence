@@ -1,16 +1,7 @@
 """
-app.py — Meeting Intelligence v4
+app.py — Meeting Intelligence v5
 Streamlit UI: input handling, output rendering, session state, Supabase persistence.
-
-Phase 4 additions over Phase 3:
-  - Meeting Series selector (top of page, before transcript input)
-  - Supabase persistence via storage.py (degrades gracefully if not configured)
-  - Recurring Mode toggle always visible (not gated on run_count)
-  - Decision Log tab (6th tab, Supabase only)
-  - Organizational Friction Report (above tabs, ≥2 sessions on same series)
-  - Updated subtitle
 """
-
 import os
 import uuid
 import streamlit as st
@@ -45,7 +36,7 @@ WORD_COUNT_SOFT_CAP = 15_000
 if "session_uuid" not in st.session_state:
     st.session_state.session_uuid = str(uuid.uuid4())
 if "past_sessions" not in st.session_state:
-    st.session_state.past_sessions = []      # list of result dicts (in-session)
+    st.session_state.past_sessions = []
 if "recurring_mode" not in st.session_state:
     st.session_state.recurring_mode = False
 if "run_count" not in st.session_state:
@@ -61,7 +52,7 @@ if "last_result" not in st.session_state:
 supabase = get_supabase_client()
 persistence_available = supabase is not None
 
-# ── Helpers (Phase 1–3, preserved) ───────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(uploaded_file) -> str:
     reader = PdfReader(io.BytesIO(uploaded_file.read()))
@@ -183,31 +174,25 @@ def build_plain_text_export(result: dict, series_name: str = "") -> str:
     if series_name:
         lines.append(f"Series: {series_name}")
     lines.append("=" * 60)
-
     lines.append("\n## DECISIONS MADE")
     for i, d in enumerate(result.get("decisions", []), 1):
         owner = f" (Owner: {d['owner']})" if d.get("owner") else ""
         lines.append(f"{i}. [{d.get('confidence','')}] {d['description']}{owner}")
-
     lines.append("\n## OPEN ITEMS")
     for item in result.get("open_items", []):
         owner = item.get("owner", "Unassigned")
         deadline = item.get("deadline", "No deadline")
         lines.append(f"• [{item.get('confidence','')}] {item['task']} — {owner} — {deadline}")
-
     lines.append("\n## BLOCKERS AND RISKS")
     for b in result.get("blockers", []):
         lines.append(f"• [{b.get('severity','?')}] {b['description']}")
-
     lines.append("\n## UNRESOLVED QUESTIONS")
     for q in result.get("open_questions", []):
         lines.append(f"• {q['question']}")
         if q.get("why_it_matters"):
             lines.append(f"  → {q['why_it_matters']}")
-
     lines.append("\n## DRAFT FOLLOW-UP EMAIL")
     lines.append(result.get("followup_email", ""))
-
     return "\n".join(lines)
 
 
@@ -217,12 +202,20 @@ st.markdown(
     "Most meeting tools tell you what was said. "
     "This one tracks what was decided — and what keeps getting left unresolved."
 )
-st.caption("Transcripts are not stored or logged. All processing is ephemeral.")
+st.caption("Raw transcripts are never stored. Only structured output is saved.")
+
+st.markdown(
+    "1. Create a meeting series or select an existing one.  \n"
+    "2. Upload or paste your meeting transcript.  \n"
+    "3. Recurring Mode tracks patterns across sessions — surfacing what keeps getting left unresolved.  \n"
+    "4. The tool extracts decisions, open items, blockers, and unresolved questions — "
+    "with a draft follow-up ready to send and all analysis exportable via download."
+)
 
 st.divider()
 
-# ── 0. Meeting Series selector (Phase 4) ─────────────────────────────────────
-st.subheader("0. Meeting Series")
+# ── Meeting Series selector ───────────────────────────────────────────────────
+st.subheader("Meeting Series")
 
 if persistence_available:
     existing_series = get_series_names(supabase)
@@ -279,8 +272,8 @@ else:
 
 st.divider()
 
-# ── 1. Transcript Input ───────────────────────────────────────────────────────
-st.subheader("1. Transcript Input")
+# ── Transcript Input ──────────────────────────────────────────────────────────
+st.subheader("Transcript Input")
 
 input_method = st.radio(
     "How would you like to provide the transcript?",
@@ -292,7 +285,6 @@ uploaded_file = None
 pasted_text = ""
 
 if input_method == "Upload file":
-    st.caption("Supported: .txt, .pdf. DOCX support coming in a future version.")
     uploaded_file = st.file_uploader(
         "Upload transcript",
         type=["txt", "pdf"],
@@ -322,10 +314,9 @@ if input_method == "Paste text" and pasted_text:
 
 st.divider()
 
-# ── 2. Options ────────────────────────────────────────────────────────────────
-st.subheader("2. Options")
+# ── Options ───────────────────────────────────────────────────────────────────
+st.subheader("Options")
 
-# Recurring mode — always visible in Phase 4 (was gated on run_count >= 1)
 st.session_state.recurring_mode = st.toggle(
     "Recurring meeting mode",
     value=st.session_state.recurring_mode,
@@ -346,17 +337,12 @@ if st.session_state.recurring_mode:
     else:
         st.success("Cross-session tracking active for this series.")
 
-# Anonymization placeholder
 anon_mode = False
-st.caption(
-    "🔒 Anonymization mode (replaces names and company references before sending to AI) "
-    "— coming in a future version."
-)
 
 st.divider()
 
-# ── 3. Run ────────────────────────────────────────────────────────────────────
-st.subheader("3. Run")
+# ── Run ───────────────────────────────────────────────────────────────────────
+st.subheader("Run")
 
 api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 if not api_key:
@@ -399,16 +385,13 @@ if run_button:
             "Review outputs carefully."
         )
 
-    # Build prior context for recurring mode
     prior_open_items = []
     prior_context = None
 
     if st.session_state.recurring_mode:
         if persistence_available and st.session_state.series_id:
-            # Cross-session: pull all prior session rows from Supabase
             prior_context = get_series_results(supabase, st.session_state.series_id)
         elif st.session_state.past_sessions:
-            # In-session fallback: use last session's open items
             prior_open_items = st.session_state.past_sessions[-1].get("open_items", [])
 
     with st.spinner("Analyzing with Claude..."):
@@ -423,7 +406,6 @@ if run_button:
         st.error(f"API error: {api_error}")
         st.stop()
 
-    # Persist structured output to Supabase (never the raw transcript)
     if persistence_available and st.session_state.series_id:
         saved = save_session_result(
             client=supabase,
@@ -450,7 +432,7 @@ if st.session_state.last_result:
 
     st.divider()
 
-    # ── Organizational Friction Report (Phase 4) ──────────────────────────────
+    # ── Organizational Friction Report ────────────────────────────────────────
     friction = {}
 
     if persistence_available and st.session_state.series_id:
@@ -458,7 +440,6 @@ if st.session_state.last_result:
         if session_count >= 2:
             friction = build_friction_report(supabase, st.session_state.series_id)
     elif st.session_state.recurring_mode and len(st.session_state.past_sessions) >= 2:
-        # In-session friction report (blockers + questions only; no overdue date parsing)
         from collections import Counter
         all_sessions = st.session_state.past_sessions
         blocker_counter: Counter = Counter()
@@ -509,10 +490,7 @@ if st.session_state.last_result:
         if rb:
             st.markdown("**🔁 Recurring Blockers**")
             for b in rb:
-                st.markdown(
-                    f"- {b['description']} "
-                    f"*(appeared in {b['seen_in_sessions']} sessions)*"
-                )
+                st.markdown(f"- {b['description']} *(appeared in {b['seen_in_sessions']} sessions)*")
         if oi:
             st.markdown("**📅 Overdue Open Items**")
             for item in oi:
@@ -524,10 +502,7 @@ if st.session_state.last_result:
         if rq:
             st.markdown("**❓ Persistently Unresolved Questions**")
             for q in rq:
-                st.markdown(
-                    f"- {q['question']} "
-                    f"*(unresolved across {q['seen_in_sessions']} sessions)*"
-                )
+                st.markdown(f"- {q['question']} *(unresolved across {q['seen_in_sessions']} sessions)*")
         if not rb and not oi and not rq:
             st.success("No recurring friction patterns detected across sessions.")
 
@@ -545,7 +520,6 @@ if st.session_state.last_result:
             "Review Medium and Low confidence items carefully."
         )
 
-    # Still open from prior session (recurring mode)
     if st.session_state.recurring_mode and result.get("still_open"):
         with st.expander("🔁 Still Open From Last Session", expanded=True):
             render_still_open(result["still_open"])
@@ -565,20 +539,15 @@ if st.session_state.last_result:
 
     with tabs[0]:
         render_decisions(result.get("decisions", []))
-
     with tabs[1]:
         render_open_items(result.get("open_items", []))
-
     with tabs[2]:
         render_blockers(result.get("blockers", []))
-
     with tabs[3]:
         render_open_questions(result.get("open_questions", []))
-
     with tabs[4]:
         render_followup_email(result.get("followup_email", ""))
 
-    # Decision Log tab (Phase 4, Supabase only)
     if len(tabs) > 5:
         with tabs[5]:
             if st.session_state.series_id:
@@ -597,9 +566,7 @@ if st.session_state.last_result:
                         with col1:
                             st.caption(run_date)
                         with col2:
-                            st.markdown(
-                                f"{badge} {d.get('description','—')} — *{owner}*"
-                            )
+                            st.markdown(f"{badge} {d.get('description','—')} — *{owner}*")
                 else:
                     st.info("No decisions recorded yet for this series.")
             else:
@@ -619,7 +586,6 @@ if st.session_state.last_result:
     with col2:
         st.code(plain_export, language=None)
 
-    # Recurring mode onboarding prompt (first run, no series named)
     if (
         st.session_state.run_count >= 1
         and not st.session_state.recurring_mode
