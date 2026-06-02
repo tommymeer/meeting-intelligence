@@ -195,6 +195,20 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
     questions = preprocessed.get("questions", [])
     normalized_text = preprocessed.get("normalized_text", "")
     lines = []
+    # Extraction checklist — injected at the top of every prompt so Claude
+    # works through all four categories before finishing, regardless of signal density.
+    lines.append("## EXTRACTION INSTRUCTIONS")
+    lines.append(
+        "Work through the transcript and call tools for every item you identify. "
+        "Before you finish, confirm you have actively called each of these tools as appropriate:\n"
+        "- create_decision: for every decision made, including deferrals\n"
+        "- create_action_item: for every task assigned or implied, including unowned ones (owner: null, confidence: Low)\n"
+        "- create_blocker: for everything slowing or preventing execution, even if not named as a blocker explicitly\n"
+        "- create_open_question: for every question raised but not answered, including deflected ones\n"
+        "An empty category is only correct if you actively looked and found nothing — not if you stopped early. "
+        "Do not call draft_followup until you have worked through all four tool types."
+    )
+    lines.append("")
     # Meeting metadata
     lines.append("## MEETING METADATA")
     lines.append(f"Title: {meta.get('title') or 'Not detected'}")
@@ -363,7 +377,7 @@ def run_meeting_intelligence(
             max_tokens=8192,
             system=system_prompt,
             tools=TOOLS,
-            tool_choice={"type": "any"},
+            tool_choice={"type": "auto"},
             messages=[
                 {"role": "user", "content": user_prompt}
             ],
@@ -377,6 +391,20 @@ def run_meeting_intelligence(
     except Exception as e:
         return {}, f"Unexpected error: {e}"
     result = parse_tool_calls(response)
+    # Guard: if all four extraction categories are empty, Claude returned no tool calls
+    # (possible with tool_choice auto). Surface an error rather than saving an empty
+    # session to Supabase, which would corrupt the series history.
+    if (
+        not result["decisions"]
+        and not result["open_items"]
+        and not result["blockers"]
+        and not result["open_questions"]
+    ):
+        return {}, (
+            "Extraction returned no results. Claude may have responded with text instead of tool calls. "
+            "This can happen with very short or ambiguous transcripts. "
+            "Please try again — if the problem persists, check that the transcript contains sufficient content."
+        )
     # ── Pass 2: force draft_followup ───────────────────────────────────────────
     decisions_text = "\n".join(
         f"- {d['description']} (Owner: {d.get('owner') or 'Unassigned'})"
