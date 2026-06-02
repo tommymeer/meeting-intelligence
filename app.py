@@ -584,6 +584,12 @@ if st.session_state.last_result:
             "Few explicit decisions detected — this may reflect meeting style. "
             "Review Medium and Low confidence items carefully."
         )
+    if result.get("low_coverage"):
+        st.warning(
+            "⚠️ **Coverage notice:** Decisions were extracted but open items and blockers came back empty. "
+            "This transcript may contain implied action items or risks that weren't surfaced. "
+            "Review the Follow-up Draft and transcript directly to confirm nothing was missed."
+        )
     if result.get("still_open"):
         with st.expander("🔁 Still Open From Last Session", expanded=True):
             render_still_open(result["still_open"])
