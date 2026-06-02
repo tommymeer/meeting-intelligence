@@ -199,6 +199,67 @@ def get_session_count(client: Client, series_id: str) -> int:
 # ---------------------------------------------------------------------------
 # Friction report helpers
 # ---------------------------------------------------------------------------
+
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "it", "in", "of", "for", "to", "and", "or",
+    "that", "this", "was", "has", "been", "are", "with", "we", "not",
+    "be", "at", "by", "on", "as", "but", "if", "its", "our", "from",
+    "have", "had", "will", "still", "no", "so", "do", "did", "can",
+})
+
+def _normalize_tokens(text: str) -> frozenset[str]:
+    """
+    Lowercase, remove punctuation, strip stop words, and loosely stem
+    (remove trailing s/ing/ed/ly) to produce a comparable token set.
+    """
+    import re
+    words = re.sub(r"[^\w\s]", "", text.lower()).split()
+    tokens = set()
+    for w in words:
+        if w in _STOP_WORDS or len(w) < 3:
+            continue
+        # Loose stemming: strip common suffixes
+        for suffix in ("ing", "ed", "ly"):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                w = w[: -len(suffix)]
+                break
+        if w.endswith("s") and len(w) > 3:
+            w = w[:-1]
+        tokens.add(w)
+    return frozenset(tokens)
+
+def _fuzzy_match(tokens_a: frozenset[str], tokens_b: frozenset[str], threshold: float = 0.4) -> bool:
+    """
+    Return True if the token overlap exceeds `threshold` of the shorter set.
+    Mirrors the approach used in prompt.py's resolve_still_open.
+    """
+    if not tokens_a or not tokens_b:
+        return False
+    overlap = len(tokens_a & tokens_b)
+    shorter = min(len(tokens_a), len(tokens_b))
+    return (overlap / shorter) >= threshold
+
+def _group_by_similarity(items: list[tuple[str, str]]) -> list[tuple[str, int]]:
+    """
+    Group (key_text, display_text) pairs by fuzzy token similarity.
+    Returns [(canonical_display_text, group_size), ...] for groups with size >= 2.
+    Each session contributes at most one item per group (dedup handled by caller).
+    """
+    # groups: list of (canonical_display, [token_sets_per_session_occurrence])
+    groups: list[tuple[str, list[frozenset]]] = []
+    for key_text, display_text in items:
+        tokens = _normalize_tokens(key_text)
+        matched = False
+        for i, (canonical, token_list) in enumerate(groups):
+            # Compare against the first (seed) token set for the group
+            if _fuzzy_match(tokens, token_list[0]):
+                token_list.append(tokens)
+                matched = True
+                break
+        if not matched:
+            groups.append((display_text, [tokens]))
+    return [(canonical, len(token_list)) for canonical, token_list in groups if len(token_list) >= 2]
+
 def build_friction_report(client: Client, series_id: str) -> dict:
     """
     Analyse cross-session structured data and return a friction report dict:
@@ -208,28 +269,31 @@ def build_friction_report(client: Client, series_id: str) -> dict:
             "recurring_open_questions":  [{"question": ..., "seen_in_sessions": N}],
             "execution_debt_score":      int,
         }
-    Only populated when >= 2 sessions exist for the series.
+    Uses fuzzy token-overlap matching to detect recurring items even when
+    Claude rephrases them across sessions. Only populated when >= 2 sessions exist.
     """
     results = get_series_results(client, series_id)
     if len(results) < 2:
         return {}
-    from collections import Counter
+
     # --- Recurring blockers ---
-    blocker_counter: Counter = Counter()
-    blocker_descriptions: dict[str, str] = {}
+    # Collect one entry per unique blocker per session (exact dedup within session,
+    # fuzzy grouping across sessions).
+    blocker_items: list[tuple[str, str]] = []  # (key_text, display_text)
     for row in results:
-        seen_descriptions = set()
+        seen_in_session: set[str] = set()
         for b in row.get("blockers") or []:
-            desc = b.get("description", "").strip().lower()
-            if desc and desc not in seen_descriptions:
-                blocker_counter[desc] += 1
-                blocker_descriptions[desc] = b.get("description", desc)
-                seen_descriptions.add(desc)
+            desc = b.get("description", "").strip()
+            key = desc.lower()
+            if key and key not in seen_in_session:
+                blocker_items.append((desc, desc))
+                seen_in_session.add(key)
+
     recurring_blockers = [
-        {"description": blocker_descriptions[desc], "seen_in_sessions": count}
-        for desc, count in blocker_counter.items()
-        if count >= 2
+        {"description": display, "seen_in_sessions": count}
+        for display, count in _group_by_similarity(blocker_items)
     ]
+
     # --- Overdue open items ---
     from datetime import date
     today = date.today()
@@ -248,22 +312,23 @@ def build_friction_report(client: Client, series_id: str) -> dict:
                     seen_overdue_tasks.add(task_key)
             except (ValueError, TypeError):
                 pass
+
     # --- Recurring open questions ---
-    question_counter: Counter = Counter()
-    question_texts: dict[str, str] = {}
+    question_items: list[tuple[str, str]] = []  # (key_text, display_text)
     for row in results:
-        seen_questions = set()
+        seen_in_session: set[str] = set()
         for q in row.get("open_questions") or []:
-            question_key = q.get("question", "").strip().lower()
-            if question_key and question_key not in seen_questions:
-                question_counter[question_key] += 1
-                question_texts[question_key] = q.get("question", question_key)
-                seen_questions.add(question_key)
+            question = q.get("question", "").strip()
+            key = question.lower()
+            if key and key not in seen_in_session:
+                question_items.append((question, question))
+                seen_in_session.add(key)
+
     recurring_open_questions = [
-        {"question": question_texts[q], "seen_in_sessions": count}
-        for q, count in question_counter.items()
-        if count >= 2
+        {"question": display, "seen_in_sessions": count}
+        for display, count in _group_by_similarity(question_items)
     ]
+
     # --- Execution debt score ---
     all_open_items = sum(len(row.get("open_items") or []) for row in results[-1:])
     debt_score = (
