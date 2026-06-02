@@ -50,7 +50,9 @@ TOOLS = [
         "description": (
             "Record an action item, commitment, or open task assigned or implied in the meeting. "
             "Call this once per distinct task. Captures both explicit assignments ('John will send') "
-            "and implicit ones ('someone needs to follow up on')."
+            "and implicit ones ('someone needs to follow up on'). "
+            "If no owner is named or clearly implied, record the task with owner: null and "
+            "confidence: Low — do not omit it. An unowned task is an organizational gap that must be surfaced."
         ),
         "input_schema": {
             "type": "object",
@@ -172,7 +174,18 @@ Confidence scoring discipline:
 - Medium: strongly implied by context, role, or conversational flow. Includes hesitant acceptances ("I guess," "I can do that"), role-implied ownership, and deadlines inferred from context.
 - Low: you are inferring — ownership or commitment is genuinely ambiguous. Flag it honestly.
 Use the tools to record each item as you identify it. \
-Do not summarize or editorialize beyond what the transcript supports.\
+Do not summarize or editorialize beyond what the transcript supports.
+
+Critical: deferrals and unresolved items are not the same as resolution.
+- If a topic is deferred ("we'll revisit next week", "same decision: discuss later"), \
+record the deferral as a decision AND separately record the underlying issue as a blocker \
+or open question. A deferral decision does not close out the blocker or question \
+— it means the problem persists.
+- If an action item has no named owner, record it anyway with owner: null and confidence: Low. \
+A task that belongs to nobody is more dangerous than a task with an ambiguous owner \
+— omitting it hides an organizational failure that the tool exists to surface.
+- Dysfunctional meeting patterns — repeated deferrals, ownership vacuums, unresolved blockers \
+carried week over week — are signal, not noise. Extract them explicitly.
 """
 
 def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
