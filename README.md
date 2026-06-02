@@ -177,4 +177,4 @@ At hundreds of concurrent users, this would require a proper backend with queuin
 
 ## What This Demonstrates
 
-The tool shows operator instinct, not just technical ability. Anyone can summarize a meeting. The judgment is in knowing what a decision actually looks like versus a discussion, what an implicit owner assignment sounds like, and what questions are dangerous to leave unresolved. That's the reasoning layer earning its keep — and it's exactly the judgment a CoS or BizOps hire is expected to bring on day one.
+Anyone can summarize a meeting. The judgment is in knowing what a decision actually looks like versus a discussion, what an implicit owner assignment sounds like, and what questions are dangerous to leave unresolved. That's the reasoning layer earning its keep.
