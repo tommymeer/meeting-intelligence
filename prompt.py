@@ -186,6 +186,17 @@ A task that belongs to nobody is more dangerous than a task with an ambiguous ow
 — omitting it hides an organizational failure that the tool exists to surface.
 - Dysfunctional meeting patterns — repeated deferrals, ownership vacuums, unresolved blockers \
 carried week over week — are signal, not noise. Extract them explicitly.
+Extraction invariants — these are independent obligations, not optional:
+- If the transcript contains any indication of risk, delay, dependency, stalled work, or \
+unresolved uncertainty, you must call create_blocker at least once. Extracting decisions \
+does not satisfy this requirement.
+- If any task was assigned or implied — including tasks with no named owner — you must call \
+create_action_item at least once. A meeting where decisions were made but nothing was assigned \
+to anyone is almost never accurate.
+- If any question was raised but deflected, deferred, or left unanswered, you must call \
+create_open_question at least once.
+These invariants exist because the model tends to terminate after extracting decisions. \
+Do not terminate early. Coverage completeness across all four categories is the completion condition.
 """
 
 def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
@@ -405,6 +416,14 @@ def run_meeting_intelligence(
             "This can happen with very short or ambiguous transcripts. "
             "Please try again — if the problem persists, check that the transcript contains sufficient content."
         )
+    # Low-coverage flag: decisions extracted but blockers and open items both empty.
+    # This is the category collapse pattern — model terminated after decisions.
+    # Flag for UI warning; session still saves (partial data is better than no data).
+    result["low_coverage"] = (
+        bool(result["decisions"])
+        and not result["open_items"]
+        and not result["blockers"]
+    )
     # ── Pass 2: force draft_followup ───────────────────────────────────────────
     decisions_text = "\n".join(
         f"- {d['description']} (Owner: {d.get('owner') or 'Unassigned'})"
