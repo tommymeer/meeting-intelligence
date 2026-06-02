@@ -7,7 +7,6 @@ import uuid
 import streamlit as st
 from pypdf import PdfReader
 import io
-
 from preprocessing import preprocess_transcript
 from prompt import run_meeting_intelligence
 from storage import (
@@ -19,19 +18,18 @@ from storage import (
     get_session_count,
     build_friction_report,
     get_series_results,
+    rename_series,
+    delete_series,
 )
-
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Meeting Intelligence",
     page_icon="🧠",
     layout="wide",
 )
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 WORD_COUNT_MIN = 200
 WORD_COUNT_SOFT_CAP = 15_000
-
 # ── Session state init ────────────────────────────────────────────────────────
 if "session_uuid" not in st.session_state:
     st.session_state.session_uuid = str(uuid.uuid4())
@@ -47,22 +45,20 @@ if "series_name" not in st.session_state:
     st.session_state.series_name = ""
 if "last_result" not in st.session_state:
     st.session_state.last_result = None
-
+# Series management state
+if "rename_input" not in st.session_state:
+    st.session_state.rename_input = ""
+if "confirm_delete" not in st.session_state:
+    st.session_state.confirm_delete = False
 # ── Supabase client ───────────────────────────────────────────────────────────
 supabase = get_supabase_client()
 persistence_available = supabase is not None
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
 def extract_text_from_pdf(uploaded_file) -> str:
     reader = PdfReader(io.BytesIO(uploaded_file.read()))
     return "\n".join(page.extract_text() or "" for page in reader.pages)
-
-
 def extract_text_from_txt(uploaded_file) -> str:
     return uploaded_file.read().decode("utf-8", errors="replace")
-
-
 def get_transcript_text(input_method, uploaded_file, pasted_text) -> tuple[str, str | None]:
     if input_method == "Upload file":
         if uploaded_file is None:
@@ -81,17 +77,11 @@ def get_transcript_text(input_method, uploaded_file, pasted_text) -> tuple[str, 
         if not pasted_text or not pasted_text.strip():
             return "", "No transcript text provided."
         return pasted_text.strip(), None
-
-
 def word_count(text: str) -> int:
     return len(text.split())
-
-
 def render_confidence_badge(level: str) -> str:
     colors = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}
     return colors.get(level, "⚪")
-
-
 def render_decisions(decisions: list):
     if not decisions:
         st.info("No explicit decisions detected.")
@@ -105,8 +95,6 @@ def render_decisions(decisions: list):
             with col2:
                 owner = f" — *Owner: {d['owner']}*" if d.get("owner") else ""
                 st.markdown(f"{badge} {d['description']}{owner}")
-
-
 def render_open_items(open_items: list):
     if not open_items:
         st.info("No open items detected.")
@@ -119,8 +107,6 @@ def render_open_items(open_items: list):
             col1, col2 = st.columns(2)
             col1.markdown(f"**Owner:** {owner}")
             col2.markdown(f"**Deadline:** {deadline}")
-
-
 def render_blockers(blockers: list):
     if not blockers:
         st.success("No blockers or risks identified.")
@@ -129,8 +115,6 @@ def render_blockers(blockers: list):
         severity = b.get("severity", "Medium")
         icon = "🔴" if severity == "High" else "🟡" if severity == "Medium" else "🟢"
         st.write(f"{icon} **[{severity}]** {b['description']}")
-
-
 def render_open_questions(questions: list):
     if not questions:
         st.info("No unresolved questions flagged.")
@@ -139,8 +123,6 @@ def render_open_questions(questions: list):
         st.markdown(f"• **{q['question']}**")
         if q.get("why_it_matters"):
             st.caption(f"Why it matters: {q['why_it_matters']}")
-
-
 def render_followup_email(email_text: str):
     if not email_text:
         st.info("No follow-up draft generated.")
@@ -157,8 +139,6 @@ def render_followup_email(email_text: str):
         file_name="meeting_followup.txt",
         mime="text/plain",
     )
-
-
 def render_still_open(still_open: list):
     if not still_open:
         return
@@ -167,9 +147,8 @@ def render_still_open(still_open: list):
         badge = render_confidence_badge(item.get("confidence", "Low"))
         owner = item.get("owner", "Unassigned")
         st.markdown(f"{badge} {item['task']} — *{owner}*")
-
-
 def build_plain_text_export(result: dict, series_name: str = "") -> str:
+    """Single-session export: decisions, open items, blockers, questions, follow-up."""
     lines = ["=" * 60, "MEETING INTELLIGENCE SUMMARY"]
     if series_name:
         lines.append(f"Series: {series_name}")
@@ -194,8 +173,54 @@ def build_plain_text_export(result: dict, series_name: str = "") -> str:
     lines.append("\n## DRAFT FOLLOW-UP EMAIL")
     lines.append(result.get("followup_email", ""))
     return "\n".join(lines)
-
-
+def build_cross_session_export(
+    result: dict,
+    series_name: str,
+    friction: dict,
+    all_decisions: list,
+) -> str:
+    """
+    Full cross-session export: single-session output + Friction Report + Decision Log.
+    Included in the second download button when series + Supabase are active.
+    """
+    lines = [build_plain_text_export(result, series_name)]
+    # ── Organizational Friction Report ────────────────────────────────────────
+    if friction:
+        debt = friction.get("execution_debt_score", 0)
+        lines.append("\n" + "=" * 60)
+        lines.append(f"ORGANIZATIONAL FRICTION REPORT — Execution Debt: {debt}")
+        lines.append("=" * 60)
+        rb = friction.get("recurring_blockers", [])
+        if rb:
+            lines.append("\n## RECURRING BLOCKERS")
+            for b in rb:
+                lines.append(f"• {b['description']} (appeared in {b['seen_in_sessions']} sessions)")
+        oi = friction.get("overdue_open_items", [])
+        if oi:
+            lines.append("\n## OVERDUE OPEN ITEMS")
+            for item in oi:
+                owner = item.get("owner", "unassigned")
+                deadline = item.get("deadline", "unknown")
+                lines.append(f"• {item.get('task', '—')} — {owner} — due {deadline}")
+        rq = friction.get("recurring_open_questions", [])
+        if rq:
+            lines.append("\n## PERSISTENTLY UNRESOLVED QUESTIONS")
+            for q in rq:
+                lines.append(f"• {q['question']} (unresolved across {q['seen_in_sessions']} sessions)")
+        if not rb and not oi and not rq:
+            lines.append("\nNo recurring friction patterns detected across sessions.")
+    # ── Decision Log ─────────────────────────────────────────────────────────
+    if all_decisions:
+        lines.append("\n" + "=" * 60)
+        lines.append(f"DECISION LOG — {series_name}")
+        lines.append("=" * 60)
+        for d in all_decisions:
+            run_date = (d.get("run_date") or "")[:10] or "unknown date"
+            owner = d.get("owner") or "unassigned"
+            confidence = d.get("confidence", "")
+            desc = d.get("description", "—")
+            lines.append(f"{run_date}  [{confidence}]  {desc}  — {owner}")
+    return "\n".join(lines)
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🧠 Meeting Intelligence")
 st.markdown(
@@ -203,7 +228,6 @@ st.markdown(
     "This one tracks what was decided — and what keeps getting left unresolved."
 )
 st.caption("Raw transcripts are never stored. Only structured output is saved.")
-
 st.markdown(
     "1. Create a meeting series or select an existing one.  \n"
     "2. Upload or paste your meeting transcript.  \n"
@@ -211,16 +235,12 @@ st.markdown(
     "4. The tool extracts decisions, open items, blockers, and unresolved questions — "
     "with a draft follow-up ready to send and all analysis exportable via download."
 )
-
 st.divider()
-
 # ── Meeting Series selector ───────────────────────────────────────────────────
 st.subheader("Meeting Series")
-
 if persistence_available:
     existing_series = get_series_names(supabase)
     series_options = ["— New series —"] + existing_series
-
     col_sel, col_new = st.columns([2, 3])
     with col_sel:
         selected_option = st.selectbox(
@@ -241,7 +261,6 @@ if persistence_available:
             st.session_state.series_name = selected_option
             st.session_state.recurring_mode = True
             st.markdown(f"**Selected:** {selected_option}")
-
     if st.session_state.series_name:
         resolved_id = get_or_create_series(
             supabase, st.session_state.series_name, st.session_state.session_uuid
@@ -257,6 +276,56 @@ if persistence_available:
         st.session_state.series_id = None
         st.caption("Name your meeting series to enable cross-session tracking.")
 
+    # ── Series Management ─────────────────────────────────────────────────────
+    if selected_option != "— New series —" and st.session_state.series_id:
+        with st.expander("⚙️ Manage this series", expanded=False):
+            st.markdown("**Rename series**")
+            rename_col, rename_btn_col = st.columns([3, 1])
+            with rename_col:
+                new_name = st.text_input(
+                    "New name",
+                    value=st.session_state.series_name,
+                    key="rename_input_field",
+                    label_visibility="collapsed",
+                )
+            with rename_btn_col:
+                if st.button("Rename", key="rename_btn"):
+                    new_name = new_name.strip()
+                    if not new_name:
+                        st.error("Name cannot be empty.")
+                    elif new_name == st.session_state.series_name:
+                        st.info("That's already the current name.")
+                    else:
+                        ok = rename_series(supabase, st.session_state.series_id, new_name)
+                        if ok:
+                            st.session_state.series_name = new_name
+                            st.success(f"Renamed to **{new_name}**.")
+                            st.rerun()
+                        else:
+                            st.error("Rename failed — that name may already be in use.")
+
+            st.markdown("---")
+            st.markdown("**Delete series**")
+            st.caption(
+                "Permanently deletes this series and all its session history. "
+                "This cannot be undone."
+            )
+            confirm = st.checkbox(
+                f'I understand — delete "{st.session_state.series_name}" and all its data',
+                key="confirm_delete_checkbox",
+            )
+            if st.button("🗑 Delete series", key="delete_btn", disabled=(not confirm)):
+                ok = delete_series(supabase, st.session_state.series_id)
+                if ok:
+                    st.session_state.series_id = None
+                    st.session_state.series_name = ""
+                    st.session_state.recurring_mode = False
+                    st.session_state.last_result = None
+                    st.success("Series deleted.")
+                    st.rerun()
+                else:
+                    st.error("Delete failed. Please try again.")
+
 else:
     series_name_input = st.text_input(
         "Meeting series name (optional)",
@@ -269,21 +338,16 @@ else:
         "⚠️ Cross-session persistence not configured. "
         "History exists only within this browser session."
     )
-
 st.divider()
-
 # ── Transcript Input ──────────────────────────────────────────────────────────
 st.subheader("Transcript Input")
-
 input_method = st.radio(
     "How would you like to provide the transcript?",
     options=["Upload file", "Paste text"],
     horizontal=True,
 )
-
 uploaded_file = None
 pasted_text = ""
-
 if input_method == "Upload file":
     uploaded_file = st.file_uploader(
         "Upload transcript",
@@ -298,7 +362,6 @@ else:
         placeholder="Paste your meeting transcript...",
         label_visibility="collapsed",
     )
-
 # Live word count (paste only)
 if input_method == "Paste text" and pasted_text:
     wc = word_count(pasted_text)
@@ -311,12 +374,9 @@ if input_method == "Paste text" and pasted_text:
         )
     else:
         st.caption(f"📝 {wc:,} words")
-
 st.divider()
-
 # ── Options ───────────────────────────────────────────────────────────────────
 st.subheader("Options")
-
 st.session_state.recurring_mode = st.toggle(
     "Recurring meeting mode",
     value=st.session_state.recurring_mode,
@@ -325,7 +385,6 @@ st.session_state.recurring_mode = st.toggle(
         "Requires a named meeting series for cross-session persistence."
     ),
 )
-
 if st.session_state.recurring_mode:
     if not st.session_state.series_name:
         st.warning("Name your meeting series above to enable cross-session tracking.")
@@ -336,68 +395,53 @@ if st.session_state.recurring_mode:
         )
     else:
         st.success("Cross-session tracking active for this series.")
-
 anon_mode = False
 st.caption(
     "For sensitive meetings, consider removing specific names and figures before pasting. "
     "Transcripts are processed by Anthropic's API and not stored."
 )
-
 st.divider()
-
 # ── Run ───────────────────────────────────────────────────────────────────────
 st.subheader("Run")
-
 api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 if not api_key:
     st.error(
         "ANTHROPIC_API_KEY not found. "
         "Set it as an environment variable or in Streamlit secrets."
     )
-
 run_button = st.button("▶ Analyze Transcript", type="primary", disabled=(not api_key))
-
 if run_button:
     raw_text, extraction_error = get_transcript_text(input_method, uploaded_file, pasted_text)
-
     if extraction_error:
         st.error(extraction_error)
         st.stop()
-
     wc = word_count(raw_text)
-
     if wc < WORD_COUNT_MIN:
         st.error(
             f"Transcript is too short ({wc} words). "
             f"Please provide at least {WORD_COUNT_MIN} words for meaningful analysis."
         )
         st.stop()
-
     if wc > WORD_COUNT_SOFT_CAP:
         st.warning(
             f"This transcript is longer than recommended ({wc:,} words). "
             "Results may be less precise — consider splitting into sections."
         )
-
     with st.spinner("Preprocessing transcript..."):
         preprocessed = preprocess_transcript(raw_text)
-
     quality = preprocessed.get("quality", {})
     if quality.get("flagged"):
         st.warning(
             f"⚠️ Transcript quality notice: {quality.get('reason', 'Low quality detected')}. "
             "Review outputs carefully."
         )
-
     prior_open_items = []
     prior_context = None
-
     if st.session_state.recurring_mode:
         if persistence_available and st.session_state.series_id:
             prior_context = get_series_results(supabase, st.session_state.series_id)
         elif st.session_state.past_sessions:
             prior_open_items = st.session_state.past_sessions[-1].get("open_items", [])
-
     with st.spinner("Analyzing with Claude..."):
         result, api_error = run_meeting_intelligence(
             preprocessed=preprocessed,
@@ -405,11 +449,9 @@ if run_button:
             prior_open_items=prior_open_items,
             prior_context=prior_context,
         )
-
     if api_error:
         st.error(f"API error: {api_error}")
         st.stop()
-
     if persistence_available and st.session_state.series_id:
         saved = save_session_result(
             client=supabase,
@@ -425,20 +467,15 @@ if run_button:
                 "⚠️ Results could not be saved to the database. "
                 "Check Supabase credentials in Streamlit secrets."
             )
-
     st.session_state.past_sessions.append(result)
     st.session_state.run_count += 1
     st.session_state.last_result = result
-
 # ── Output ────────────────────────────────────────────────────────────────────
 if st.session_state.last_result:
     result = st.session_state.last_result
-
     st.divider()
-
     # ── Organizational Friction Report ────────────────────────────────────────
     friction = {}
-
     if persistence_available and st.session_state.series_id:
         session_count = get_session_count(supabase, st.session_state.series_id)
         if session_count >= 2:
@@ -481,16 +518,13 @@ if st.session_state.last_result:
                 "recurring_open_questions": recurring_questions,
                 "execution_debt_score": len(recurring_blockers) + len(recurring_questions),
             }
-
     if friction:
         debt = friction.get("execution_debt_score", 0)
         debt_icon = "🔴" if debt >= 8 else "🟡" if debt >= 4 else "🟢"
         st.subheader(f"⚠️ Organizational Friction Report — Execution Debt: {debt_icon} {debt}")
-
         rb = friction.get("recurring_blockers", [])
         oi = friction.get("overdue_open_items", [])
         rq = friction.get("recurring_open_questions", [])
-
         if rb:
             st.markdown("**🔁 Recurring Blockers**")
             for b in rb:
@@ -509,12 +543,9 @@ if st.session_state.last_result:
                 st.markdown(f"- {q['question']} *(unresolved across {q['seen_in_sessions']} sessions)*")
         if not rb and not oi and not rq:
             st.success("No recurring friction patterns detected across sessions.")
-
         st.divider()
-
     # ── Analysis Results ──────────────────────────────────────────────────────
     st.subheader("📋 Analysis Results")
-
     high_conf_count = sum(
         1 for d in result.get("decisions", []) if d.get("confidence") == "High"
     )
@@ -523,11 +554,9 @@ if st.session_state.last_result:
             "Few explicit decisions detected — this may reflect meeting style. "
             "Review Medium and Low confidence items carefully."
         )
-
     if st.session_state.recurring_mode and result.get("still_open"):
         with st.expander("🔁 Still Open From Last Session", expanded=True):
             render_still_open(result["still_open"])
-
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab_labels = [
         "✅ Decisions",
@@ -538,9 +567,7 @@ if st.session_state.last_result:
     ]
     if persistence_available and st.session_state.series_id:
         tab_labels.append("📋 Decision Log")
-
     tabs = st.tabs(tab_labels)
-
     with tabs[0]:
         render_decisions(result.get("decisions", []))
     with tabs[1]:
@@ -551,18 +578,19 @@ if st.session_state.last_result:
         render_open_questions(result.get("open_questions", []))
     with tabs[4]:
         render_followup_email(result.get("followup_email", ""))
-
+    # Decision Log tab data (also used for cross-session export)
+    all_decisions_for_export = []
     if len(tabs) > 5:
         with tabs[5]:
             if st.session_state.series_id:
-                all_decisions = get_all_decisions(supabase, st.session_state.series_id)
-                if all_decisions:
+                all_decisions_for_export = get_all_decisions(supabase, st.session_state.series_id)
+                if all_decisions_for_export:
                     st.caption(
-                        f"{len(all_decisions)} decision"
-                        f"{'s' if len(all_decisions) != 1 else ''} on record for "
+                        f"{len(all_decisions_for_export)} decision"
+                        f"{'s' if len(all_decisions_for_export) != 1 else ''} on record for "
                         f"**{st.session_state.series_name}**."
                     )
-                    for d in reversed(all_decisions):
+                    for d in reversed(all_decisions_for_export):
                         run_date = (d.get("run_date") or "")[:10] or "unknown date"
                         owner = d.get("owner") or "unassigned"
                         badge = render_confidence_badge(d.get("confidence", "Low"))
@@ -575,21 +603,52 @@ if st.session_state.last_result:
                     st.info("No decisions recorded yet for this series.")
             else:
                 st.info("Name a meeting series above to enable the Decision Log.")
-
     # ── Export ────────────────────────────────────────────────────────────────
     st.divider()
     plain_export = build_plain_text_export(result, st.session_state.series_name)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            label="⬇ Download full summary (.txt)",
-            data=plain_export,
-            file_name="meeting_summary.txt",
-            mime="text/plain",
+    # Determine if cross-session export is available
+    has_cross_session = (
+        persistence_available
+        and st.session_state.series_id
+        and (friction or all_decisions_for_export)
+    )
+    if has_cross_session:
+        # Fetch decisions if not already loaded (series has sessions but no Decision Log tab data)
+        if not all_decisions_for_export:
+            all_decisions_for_export = get_all_decisions(supabase, st.session_state.series_id)
+        cross_export = build_cross_session_export(
+            result,
+            st.session_state.series_name,
+            friction,
+            all_decisions_for_export,
         )
-    with col2:
-        st.code(plain_export, language=None)
-
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                label="⬇ Download this session (.txt)",
+                data=plain_export,
+                file_name="meeting_summary.txt",
+                mime="text/plain",
+            )
+        with dl_col2:
+            st.download_button(
+                label="⬇ Download full series report (.txt)",
+                data=cross_export,
+                file_name=f"meeting_series_{st.session_state.series_name.replace(' ', '_').lower()}.txt",
+                mime="text/plain",
+                help="Includes this session's analysis, the Friction Report, and the full Decision Log.",
+            )
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="⬇ Download full summary (.txt)",
+                data=plain_export,
+                file_name="meeting_summary.txt",
+                mime="text/plain",
+            )
+        with col2:
+            st.code(plain_export, language=None)
     if (
         st.session_state.run_count >= 1
         and not st.session_state.recurring_mode
