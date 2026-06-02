@@ -437,14 +437,16 @@ if run_button:
         )
     prior_open_items = []
     prior_context = None
+    # Prior context is used only for still-open tracking via resolve_still_open after extraction.
+    # We do NOT pass it to Claude during extraction — doing so causes Claude to suppress
+    # extraction of open items, blockers, and questions that appeared in prior sessions.
+    # Instead, we fetch prior sessions here and pass them separately for post-extraction comparison.
+    prior_sessions_for_still_open = []
     if st.session_state.recurring_mode:
         if persistence_available and st.session_state.series_id:
             fetched = get_series_results(supabase, st.session_state.series_id)
-            # Only pass prior context when there are actual prior sessions to reference.
-            # Passing an empty list still triggers the prior-context code path in prompt.py
-            # and can suppress extraction of open items and questions.
             if fetched:
-                prior_context = fetched
+                prior_sessions_for_still_open = fetched
         elif st.session_state.past_sessions:
             prior_open_items = st.session_state.past_sessions[-1].get("open_items", [])
     with st.spinner("Analyzing with Claude..."):
@@ -452,11 +454,24 @@ if run_button:
             preprocessed=preprocessed,
             api_key=api_key,
             prior_open_items=prior_open_items,
-            prior_context=prior_context,
+            # prior_context intentionally not passed — see comment above
         )
     if api_error:
         st.error(f"API error: {api_error}")
         st.stop()
+    # Post-extraction: compute still_open by comparing against prior sessions from Supabase
+    if prior_sessions_for_still_open:
+        from prompt import resolve_still_open
+        flat_prior: list[dict] = []
+        seen: set[str] = set()
+        for session in prior_sessions_for_still_open:
+            for item in session.get("open_items") or []:
+                key = (item.get("task") or "").strip().lower()
+                if key and key not in seen:
+                    flat_prior.append(item)
+                    seen.add(key)
+        if flat_prior:
+            result = resolve_still_open(result, flat_prior)
     if persistence_available and st.session_state.series_id:
         saved = save_session_result(
             client=supabase,
