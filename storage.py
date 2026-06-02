@@ -1,30 +1,23 @@
 """
 storage.py — Supabase persistence layer for Meeting Intelligence Phase 4.
-
 Handles:
 - Meeting series creation and lookup
 - Session result writes (structured output only, never raw transcripts)
 - Cross-session reads for Decision Log and Friction Report
-
 Tables:
     meeting_series  (id uuid PK, name text, created_at timestamptz, session_uuid text)
     session_results (id uuid PK, series_id uuid FK, run_date timestamptz,
                      decisions jsonb, open_items jsonb, blockers jsonb,
                      open_questions jsonb, followup_email text)
 """
-
 import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-
 from supabase import create_client, Client
-
-
 # ---------------------------------------------------------------------------
 # Client initialisation
 # ---------------------------------------------------------------------------
-
 def get_supabase_client() -> Optional[Client]:
     """
     Return an authenticated Supabase client, or None if env vars are missing.
@@ -35,12 +28,9 @@ def get_supabase_client() -> Optional[Client]:
     if not url or not key:
         return None
     return create_client(url, key)
-
-
 # ---------------------------------------------------------------------------
 # Meeting series helpers
 # ---------------------------------------------------------------------------
-
 def list_series(client: Client) -> list[dict]:
     """
     Return all meeting series rows, ordered by most recently created first.
@@ -56,8 +46,6 @@ def list_series(client: Client) -> list[dict]:
         return response.data or []
     except Exception:
         return []
-
-
 def get_or_create_series(client: Client, name: str, session_uuid: str) -> Optional[str]:
     """
     Look up a meeting series by exact name.
@@ -79,7 +67,6 @@ def get_or_create_series(client: Client, name: str, session_uuid: str) -> Option
         )
         if response.data:
             return response.data[0]["id"]
-
         # Create new series
         new_id = str(uuid.uuid4())
         client.table("meeting_series").insert(
@@ -93,18 +80,49 @@ def get_or_create_series(client: Client, name: str, session_uuid: str) -> Option
         return new_id
     except Exception:
         return None
-
-
 def get_series_names(client: Client) -> list[str]:
     """Return a flat list of meeting series names for the UI selector."""
     rows = list_series(client)
     return [r["name"] for r in rows]
-
-
+def rename_series(client: Client, series_id: str, new_name: str) -> bool:
+    """
+    Rename a meeting series by id.
+    Returns True on success, False on failure (including name collision).
+    """
+    new_name = new_name.strip()
+    if not new_name or not series_id:
+        return False
+    try:
+        # Check for name collision (another series with the same name)
+        response = (
+            client.table("meeting_series")
+            .select("id")
+            .eq("name", new_name)
+            .neq("id", series_id)
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            return False  # name already taken
+        client.table("meeting_series").update({"name": new_name}).eq("id", series_id).execute()
+        return True
+    except Exception:
+        return False
+def delete_series(client: Client, series_id: str) -> bool:
+    """
+    Delete a meeting series and all its session results (FK cascade handles child rows).
+    Returns True on success, False on failure.
+    """
+    if not series_id:
+        return False
+    try:
+        client.table("meeting_series").delete().eq("id", series_id).execute()
+        return True
+    except Exception:
+        return False
 # ---------------------------------------------------------------------------
 # Session result writes
 # ---------------------------------------------------------------------------
-
 def save_session_result(
     client: Client,
     series_id: str,
@@ -135,12 +153,9 @@ def save_session_result(
         return True
     except Exception:
         return False
-
-
 # ---------------------------------------------------------------------------
 # Session result reads
 # ---------------------------------------------------------------------------
-
 def get_series_results(client: Client, series_id: str) -> list[dict]:
     """
     Return all session results for a given series, oldest first.
@@ -157,8 +172,6 @@ def get_series_results(client: Client, series_id: str) -> list[dict]:
         return response.data or []
     except Exception:
         return []
-
-
 def get_all_decisions(client: Client, series_id: str) -> list[dict]:
     """
     Flatten all decisions across every session for a series.
@@ -171,8 +184,6 @@ def get_all_decisions(client: Client, series_id: str) -> list[dict]:
         for d in row.get("decisions") or []:
             decisions.append({**d, "run_date": run_date})
     return decisions
-
-
 def get_session_count(client: Client, series_id: str) -> int:
     """Return the number of sessions stored for a given series."""
     try:
@@ -185,31 +196,24 @@ def get_session_count(client: Client, series_id: str) -> int:
         return response.count or 0
     except Exception:
         return 0
-
-
 # ---------------------------------------------------------------------------
 # Friction report helpers
 # ---------------------------------------------------------------------------
-
 def build_friction_report(client: Client, series_id: str) -> dict:
     """
     Analyse cross-session structured data and return a friction report dict:
-
         {
             "recurring_blockers":       [{"description": ..., "seen_in_sessions": N}],
             "overdue_open_items":        [{task, owner, deadline, ...}],
             "recurring_open_questions":  [{"question": ..., "seen_in_sessions": N}],
             "execution_debt_score":      int,
         }
-
     Only populated when >= 2 sessions exist for the series.
     """
     results = get_series_results(client, series_id)
     if len(results) < 2:
         return {}
-
     from collections import Counter
-
     # --- Recurring blockers ---
     blocker_counter: Counter = Counter()
     blocker_descriptions: dict[str, str] = {}
@@ -219,15 +223,13 @@ def build_friction_report(client: Client, series_id: str) -> dict:
             desc = b.get("description", "").strip().lower()
             if desc and desc not in seen_descriptions:
                 blocker_counter[desc] += 1
-                blocker_descriptions[desc] = b.get("description", desc)  # preserve original case
+                blocker_descriptions[desc] = b.get("description", desc)
                 seen_descriptions.add(desc)
-
     recurring_blockers = [
         {"description": blocker_descriptions[desc], "seen_in_sessions": count}
         for desc, count in blocker_counter.items()
         if count >= 2
     ]
-
     # --- Overdue open items ---
     from datetime import date
     today = date.today()
@@ -246,7 +248,6 @@ def build_friction_report(client: Client, series_id: str) -> dict:
                     seen_overdue_tasks.add(task_key)
             except (ValueError, TypeError):
                 pass
-
     # --- Recurring open questions ---
     question_counter: Counter = Counter()
     question_texts: dict[str, str] = {}
@@ -258,23 +259,19 @@ def build_friction_report(client: Client, series_id: str) -> dict:
                 question_counter[question_key] += 1
                 question_texts[question_key] = q.get("question", question_key)
                 seen_questions.add(question_key)
-
     recurring_open_questions = [
         {"question": question_texts[q], "seen_in_sessions": count}
         for q, count in question_counter.items()
         if count >= 2
     ]
-
     # --- Execution debt score ---
-    # Count: all unresolved open items + overdue items + recurring blockers + recurring questions
-    all_open_items = sum(len(row.get("open_items") or []) for row in results[-1:])  # latest session only
+    all_open_items = sum(len(row.get("open_items") or []) for row in results[-1:])
     debt_score = (
         all_open_items
         + len(overdue_open_items)
         + len(recurring_blockers)
         + len(recurring_open_questions)
     )
-
     return {
         "recurring_blockers": recurring_blockers,
         "overdue_open_items": overdue_open_items,
