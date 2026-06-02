@@ -35,8 +35,6 @@ if "session_uuid" not in st.session_state:
     st.session_state.session_uuid = str(uuid.uuid4())
 if "past_sessions" not in st.session_state:
     st.session_state.past_sessions = []
-if "recurring_mode" not in st.session_state:
-    st.session_state.recurring_mode = False
 if "run_count" not in st.session_state:
     st.session_state.run_count = 0
 if "series_id" not in st.session_state:
@@ -259,7 +257,6 @@ if persistence_available:
             st.session_state.series_name = series_name_input.strip()
         else:
             st.session_state.series_name = selected_option
-            st.session_state.recurring_mode = True
             st.markdown(f"**Selected:** {selected_option}")
     if st.session_state.series_name:
         resolved_id = get_or_create_series(
@@ -319,7 +316,6 @@ if persistence_available:
                 if ok:
                     st.session_state.series_id = None
                     st.session_state.series_name = ""
-                    st.session_state.recurring_mode = False
                     st.session_state.last_result = None
                     st.success("Series deleted.")
                     st.rerun()
@@ -376,26 +372,12 @@ if input_method == "Paste text" and pasted_text:
         st.caption(f"📝 {wc:,} words")
 st.divider()
 # ── Options ───────────────────────────────────────────────────────────────────
-st.subheader("Options")
-st.session_state.recurring_mode = st.toggle(
-    "Recurring meeting mode",
-    value=st.session_state.recurring_mode,
-    key="recurring_mode_toggle",
-    help=(
-        "Tracks open items across sessions and surfaces what keeps getting left unresolved. "
-        "Requires a named meeting series for cross-session persistence."
-    ),
-)
-if st.session_state.recurring_mode:
-    if not st.session_state.series_name:
-        st.warning("Name your meeting series above to enable cross-session tracking.")
-    elif not persistence_available:
-        st.info(
-            "In-session recurring mode active — history persists within this browser tab only. "
-            "Configure Supabase credentials for cross-session persistence."
-        )
-    else:
-        st.success("Cross-session tracking active for this series.")
+if persistence_available and st.session_state.series_name:
+    st.success("Cross-session tracking active for this series.")
+elif st.session_state.series_name and not persistence_available:
+    st.info(
+        "Cross-session persistence not configured — history exists within this browser tab only."
+    )
 anon_mode = False
 st.caption(
     "For sensitive meetings, consider removing specific names and figures before pasting. "
@@ -443,13 +425,12 @@ if run_button:
     # extraction of open items, blockers, and questions that appeared in prior sessions.
     # Instead, we fetch prior sessions here and pass them separately for post-extraction comparison.
     prior_sessions_for_still_open = []
-    if st.session_state.recurring_mode:
-        if persistence_available and st.session_state.series_id:
-            fetched = get_series_results(supabase, st.session_state.series_id)
-            if fetched:
-                prior_sessions_for_still_open = fetched
-        elif st.session_state.past_sessions:
-            prior_open_items = st.session_state.past_sessions[-1].get("open_items", [])
+    if persistence_available and st.session_state.series_id:
+        fetched = get_series_results(supabase, st.session_state.series_id)
+        if fetched:
+            prior_sessions_for_still_open = fetched
+    elif st.session_state.past_sessions:
+        prior_open_items = st.session_state.past_sessions[-1].get("open_items", [])
     with st.spinner("Analyzing with Claude..."):
         result, api_error = run_meeting_intelligence(
             preprocessed=preprocessed,
@@ -501,7 +482,7 @@ if st.session_state.last_result:
         session_count = get_session_count(supabase, st.session_state.series_id)
         if session_count >= 2:
             friction = build_friction_report(supabase, st.session_state.series_id)
-    elif st.session_state.recurring_mode and len(st.session_state.past_sessions) >= 2:
+    elif not persistence_available and len(st.session_state.past_sessions) >= 2:
         from collections import Counter
         all_sessions = st.session_state.past_sessions
         blocker_counter: Counter = Counter()
@@ -575,7 +556,7 @@ if st.session_state.last_result:
             "Few explicit decisions detected — this may reflect meeting style. "
             "Review Medium and Low confidence items carefully."
         )
-    if st.session_state.recurring_mode and result.get("still_open"):
+    if result.get("still_open"):
         with st.expander("🔁 Still Open From Last Session", expanded=True):
             render_still_open(result["still_open"])
     # ── Tabs ──────────────────────────────────────────────────────────────────
@@ -671,12 +652,8 @@ if st.session_state.last_result:
             )
         with col2:
             st.code(plain_export, language=None)
-    if (
-        st.session_state.run_count >= 1
-        and not st.session_state.recurring_mode
-        and not st.session_state.series_name
-    ):
+    if st.session_state.run_count >= 1 and not st.session_state.series_name:
         st.info(
-            "Running this meeting weekly? Name your series above and enable "
-            "**Recurring Mode** to track open items across sessions."
+            "Running this meeting weekly? Name your series above to track "
+            "open items and surface patterns across sessions."
         )
