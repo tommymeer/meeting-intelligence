@@ -239,26 +239,74 @@ def _fuzzy_match(tokens_a: frozenset[str], tokens_b: frozenset[str], threshold: 
     shorter = min(len(tokens_a), len(tokens_b))
     return (overlap / shorter) >= threshold
 
-def _group_by_similarity(items: list[tuple[str, str]]) -> list[tuple[str, int]]:
+def _group_by_similarity(
+    items: list[tuple[str, str, int]],
+) -> list[tuple[str, list[int]]]:
     """
-    Group (key_text, display_text) pairs by fuzzy token similarity.
-    Returns [(canonical_display_text, group_size), ...] for groups with size >= 2.
-    Each session contributes at most one item per group (dedup handled by caller).
+    Group (key_text, display_text, session_index) triples by fuzzy token similarity.
+    Returns [(canonical_display_text, [session_indices]), ...] for groups with >= 2
+    distinct session indices. Each session contributes at most one item per group
+    (dedup handled by caller).
     """
-    # groups: list of (canonical_display, [token_sets_per_session_occurrence])
-    groups: list[tuple[str, list[frozenset]]] = []
-    for key_text, display_text in items:
+    # groups: list of (canonical_display, [session_indices], [seed_token_set])
+    groups: list[tuple[str, list[int], list[frozenset]]] = []
+    for key_text, display_text, session_idx in items:
         tokens = _normalize_tokens(key_text)
         matched = False
-        for i, (canonical, token_list) in enumerate(groups):
-            # Compare against the first (seed) token set for the group
-            if _fuzzy_match(tokens, token_list[0]):
-                token_list.append(tokens)
+        for canonical, idx_list, token_seed in groups:
+            if _fuzzy_match(tokens, token_seed[0]):
+                idx_list.append(session_idx)
                 matched = True
                 break
         if not matched:
-            groups.append((display_text, [tokens]))
-    return [(canonical, len(token_list)) for canonical, token_list in groups if len(token_list) >= 2]
+            groups.append((display_text, [session_idx], [tokens]))
+    return [
+        (canonical, idx_list)
+        for canonical, idx_list, _ in groups
+        if len(set(idx_list)) >= 2          # at least 2 distinct sessions
+    ]
+
+
+def _describe_recurrence(session_indices: list[int], results: list[dict]) -> str:
+    """
+    Produce a human-readable recurrence description from a list of session indices
+    (positions into `results`) and the full results list (for run_date lookup).
+
+    Examples:
+        "unresolved across 3 consecutive sessions (4 weeks)"
+        "appeared in sessions 1 and 4 (6-week gap)"
+        "appeared in 2 sessions"          ← fallback when dates unavailable
+
+    Degrades gracefully: any date parse failure falls back to plain count string.
+    """
+    from datetime import date as _date
+
+    unique = sorted(set(session_indices))
+    n = len(unique)
+
+    # Consecutive check: indices are contiguous integers
+    is_consecutive = all(unique[i + 1] == unique[i] + 1 for i in range(len(unique) - 1))
+
+    # Attempt date-based span calculation
+    span_str = ""
+    try:
+        first_date_raw = (results[unique[0]].get("run_date") or "")[:10]
+        last_date_raw  = (results[unique[-1]].get("run_date") or "")[:10]
+        if first_date_raw and last_date_raw and first_date_raw != last_date_raw:
+            first_date = _date.fromisoformat(first_date_raw)
+            last_date  = _date.fromisoformat(last_date_raw)
+            weeks = max(1, round((last_date - first_date).days / 7))
+            span_str = f" ({weeks} week{'s' if weeks != 1 else ''})"
+    except (ValueError, TypeError, IndexError):
+        span_str = ""
+
+    if n == 2 and not is_consecutive:
+        # e.g. sessions 1 and 4
+        return f"appeared in sessions {unique[0] + 1} and {unique[1] + 1}{span_str}"
+    elif is_consecutive and span_str:
+        return f"unresolved across {n} consecutive sessions{span_str}"
+    else:
+        return f"appeared in {n} sessions{span_str}"
 
 def build_friction_report(client: Client, series_id: str) -> dict:
     """
@@ -268,7 +316,18 @@ def build_friction_report(client: Client, series_id: str) -> dict:
             "overdue_open_items":        [{task, owner, deadline, ...}],
             "recurring_open_questions":  [{"question": ..., "seen_in_sessions": N}],
             "execution_debt_score":      int,
+            "debt_signals": {
+                "null_owner_decisions":  int,   # decisions with no owner across all sessions
+                "persistent_blockers":   int,   # count of recurring blockers (weight ×2)
+                "recurring_questions":   int,   # count of recurring open questions (weight ×2)
+                "overdue_items":         int,   # count of overdue open items (weight ×1)
+            },
         }
+    Execution debt weights:
+        persistent_blockers   ×2  — implies cross-session failure by definition
+        recurring_questions   ×2  — implies cross-session failure by definition
+        null_owner_decisions  ×1  — ownership gap; not yet a pattern, but a risk signal
+        overdue_items         ×1  — missed deadlines; compounding but not yet recurring
     Uses fuzzy token-overlap matching to detect recurring items even when
     Claude rephrases them across sessions. Only populated when >= 2 sessions exist.
     """
@@ -279,19 +338,19 @@ def build_friction_report(client: Client, series_id: str) -> dict:
     # --- Recurring blockers ---
     # Collect one entry per unique blocker per session (exact dedup within session,
     # fuzzy grouping across sessions).
-    blocker_items: list[tuple[str, str]] = []  # (key_text, display_text)
-    for row in results:
+    blocker_items: list[tuple[str, str, int]] = []  # (key_text, display_text, session_idx)
+    for session_idx, row in enumerate(results):
         seen_in_session: set[str] = set()
         for b in row.get("blockers") or []:
             desc = b.get("description", "").strip()
             key = desc.lower()
             if key and key not in seen_in_session:
-                blocker_items.append((desc, desc))
+                blocker_items.append((desc, desc, session_idx))
                 seen_in_session.add(key)
 
     recurring_blockers = [
-        {"description": display, "seen_in_sessions": count}
-        for display, count in _group_by_similarity(blocker_items)
+        {"description": display, "seen_in_sessions": _describe_recurrence(idx_list, results)}
+        for display, idx_list in _group_by_similarity(blocker_items)
     ]
 
     # --- Overdue open items ---
@@ -314,32 +373,58 @@ def build_friction_report(client: Client, series_id: str) -> dict:
                 pass
 
     # --- Recurring open questions ---
-    question_items: list[tuple[str, str]] = []  # (key_text, display_text)
-    for row in results:
+    question_items: list[tuple[str, str, int]] = []  # (key_text, display_text, session_idx)
+    for session_idx, row in enumerate(results):
         seen_in_session: set[str] = set()
         for q in row.get("open_questions") or []:
             question = q.get("question", "").strip()
             key = question.lower()
             if key and key not in seen_in_session:
-                question_items.append((question, question))
+                question_items.append((question, question, session_idx))
                 seen_in_session.add(key)
 
     recurring_open_questions = [
-        {"question": display, "seen_in_sessions": count}
-        for display, count in _group_by_similarity(question_items)
+        {"question": display, "seen_in_sessions": _describe_recurrence(idx_list, results)}
+        for display, idx_list in _group_by_similarity(question_items)
     ]
 
-    # --- Execution debt score ---
-    all_open_items = sum(len(row.get("open_items") or []) for row in results[-1:])
+    # --- Null-owner decisions ---
+    # Count decisions across all sessions where ownership was never assigned.
+    # Falsy owner, explicit "TBD", or common variants treated equivalently.
+    _TBD_VARIANTS = {"tbd", "tbd.", "n/a", "unknown", "unassigned", ""}
+    null_owner_count = 0
+    for row in results:
+        for d in row.get("decisions") or []:
+            owner_raw = (d.get("owner") or "").strip().lower()
+            if owner_raw in _TBD_VARIANTS:
+                null_owner_count += 1
+
+    # --- Execution debt score (weighted) ---
+    # persistent_blockers and recurring_questions carry x2 because each implies
+    # a cross-session failure: the organisation encountered it, didn't resolve it,
+    # and hit it again. null_owner_decisions and overdue_items carry x1.
+    n_persistent_blockers = len(recurring_blockers)
+    n_recurring_questions = len(recurring_open_questions)
+    n_overdue_items       = len(overdue_open_items)
+
     debt_score = (
-        all_open_items
-        + len(overdue_open_items)
-        + len(recurring_blockers)
-        + len(recurring_open_questions)
+        (n_persistent_blockers * 2)
+        + (n_recurring_questions * 2)
+        + null_owner_count
+        + n_overdue_items
     )
+
+    debt_signals = {
+        "null_owner_decisions": null_owner_count,
+        "persistent_blockers":  n_persistent_blockers,
+        "recurring_questions":  n_recurring_questions,
+        "overdue_items":        n_overdue_items,
+    }
+
     return {
-        "recurring_blockers": recurring_blockers,
-        "overdue_open_items": overdue_open_items,
+        "recurring_blockers":       recurring_blockers,
+        "overdue_open_items":       overdue_open_items,
         "recurring_open_questions": recurring_open_questions,
-        "execution_debt_score": debt_score,
+        "execution_debt_score":     debt_score,
+        "debt_signals":             debt_signals,
     }
