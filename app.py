@@ -229,9 +229,9 @@ st.caption("Raw transcripts are never stored. Only structured output is saved.")
 st.markdown(
     "1. Create a meeting series or select an existing one.  \n"
     "2. Upload or paste your meeting transcript.  \n"
-    "3. Recurring Mode tracks patterns across sessions — surfacing what keeps getting left unresolved.  \n"
-    "4. The tool extracts decisions, open items, blockers, and unresolved questions — "
-    "with a draft follow-up ready to send and all analysis exportable via download."
+    "3. The tool extracts decisions, open items, blockers, and unresolved questions — "
+    "with a draft follow-up ready to send and all analysis exportable via download. "
+    "Patterns are tracked automatically across sessions, surfacing what keeps getting left unresolved."
 )
 st.divider()
 # ── Meeting Series selector ───────────────────────────────────────────────────
