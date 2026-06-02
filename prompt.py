@@ -232,6 +232,27 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
             deadline = item.get("deadline", "No deadline")
             lines.append(f"{i}. {item.get('task', '')} — {owner} — {deadline}")
         lines.append("")
+    # Low-signal warning — injected when preprocessing found few explicit signals.
+    # A sparse signal list means the transcript lacks explicit commitment/decision
+    # language, not that it lacks content. Claude must read the full transcript
+    # directly rather than anchoring on the short signal list.
+    total_signals = len(commitments) + len(decision_signals) + len(questions)
+    if total_signals < 4:
+        lines.append("## ⚠ LOW-SIGNAL TRANSCRIPT NOTICE")
+        lines.append(
+            "The preprocessing layer found very few explicit commitment or decision phrases in this transcript. "
+            "This does NOT mean the meeting was uneventful — it means the language was implicit, "
+            "indirect, or structured around deferrals rather than explicit assignments. "
+            "You must read the full transcript carefully and extract blockers, open items, and "
+            "unresolved questions directly from context. "
+            "Common patterns to look for in low-signal transcripts: "
+            "(1) topics that end with 'we'll discuss next week' with no owner — these are deferrals AND blockers; "
+            "(2) tasks nobody claimed — record with owner: null, confidence: Low; "
+            "(3) questions raised but deflected rather than answered — these are open questions; "
+            "(4) repeated circular disagreements with no resolution — these are both blockers and open questions. "
+            "Do not let a short signal list constrain your extraction. Extract from the transcript itself."
+        )
+        lines.append("")
     # Full transcript
     lines.append("## TRANSCRIPT")
     lines.append(normalized_text)
