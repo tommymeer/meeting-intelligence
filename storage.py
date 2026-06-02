@@ -228,6 +228,53 @@ def _normalize_tokens(text: str) -> frozenset[str]:
         tokens.add(w)
     return frozenset(tokens)
 
+# Generic operational words that appear frequently across all meeting items
+# and carry no discriminating signal for subject-matching.
+_GENERIC_OPS = frozenset({
+    "fix", "patch", "ship", "last", "next", "week", "three",
+    "two", "one", "time", "issu", "problem", "work", "team", "need",
+    "make", "take", "current", "new", "old", "clear", "move", "get",
+    "resolv", "address", "updat", "statu", "plan", "review", "show",
+    "meet", "sync", "call", "discuss", "add", "check", "follow", "send",
+    "due", "today", "month", "stall", "block", "complet", "done",
+})
+
+
+def _topic_tag(text: str, n: int = 5) -> frozenset[str]:
+    """
+    Extract up to `n` domain-specific content words from `text` as a frozenset
+    for subject-level fuzzy matching across sessions.
+
+    Two-pass filter:
+      1. Standard stop-word removal + stemming (shared with _normalize_tokens)
+      2. Extended generic-ops removal (_GENERIC_OPS) strips meeting-context
+         filler ("fix", "patch", "week") that appear in all items and would
+         otherwise crowd out the subject words in a short tag set.
+
+    Left-to-right selection preserves subject-word priority: the first
+    substantive noun in a description is almost always the topic
+    ("onboarding", "legal", "pricing").
+    """
+    import re
+    words = re.sub(r"[^\w\s]", "", text.lower()).split()
+    tags = []
+    for w in words:
+        if len(tags) >= n:
+            break
+        if w in _STOP_WORDS or len(w) < 3:
+            continue
+        for suffix in ("ing", "ed", "ly"):
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                w = w[: -len(suffix)]
+                break
+        if w.endswith("s") and len(w) > 3:
+            w = w[:-1]
+        if w in _GENERIC_OPS:
+            continue
+        tags.append(w)
+    return frozenset(tags)
+
+
 def _fuzzy_match(tokens_a: frozenset[str], tokens_b: frozenset[str], threshold: float = 0.4) -> bool:
     """
     Return True if the token overlap exceeds `threshold` of the shorter set.
@@ -248,18 +295,21 @@ def _group_by_similarity(
     distinct session indices. Each session contributes at most one item per group
     (dedup handled by caller).
     """
-    # groups: list of (canonical_display, [session_indices], [seed_token_set])
-    groups: list[tuple[str, list[int], list[frozenset]]] = []
+    # groups: list of (canonical_display, [session_indices], seed_topic_tag)
+    # Matching is done on topic tags (first 4 content words in order) rather than
+    # full token sets. This targets the stable subject of each item and avoids
+    # false positives from shared elaboration words ("team", "week", "fix").
+    groups: list[tuple[str, list[int], frozenset]] = []
     for key_text, display_text, session_idx in items:
-        tokens = _normalize_tokens(key_text)
+        tag = _topic_tag(key_text)
         matched = False
-        for canonical, idx_list, token_seed in groups:
-            if _fuzzy_match(tokens, token_seed[0]):
+        for canonical, idx_list, seed_tag in groups:
+            if _fuzzy_match(tag, seed_tag, threshold=0.25):
                 idx_list.append(session_idx)
                 matched = True
                 break
         if not matched:
-            groups.append((display_text, [session_idx], [tokens]))
+            groups.append((display_text, [session_idx], tag))
     return [
         (canonical, idx_list)
         for canonical, idx_list, _ in groups
@@ -391,7 +441,7 @@ def build_friction_report(client: Client, series_id: str) -> dict:
     # --- Null-owner decisions ---
     # Count decisions across all sessions where ownership was never assigned.
     # Falsy owner, explicit "TBD", or common variants treated equivalently.
-    _TBD_VARIANTS = {"tbd", "tbd.", "n/a", "unknown", "unassigned", ""}
+    _TBD_VARIANTS = {"tbd", "tbd.", "n/a", "unknown", "unassigned", "null", ""}
     null_owner_count = 0
     for row in results:
         for d in row.get("decisions") or []:
