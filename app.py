@@ -606,11 +606,12 @@ if st.session_state.last_result:
     # ── Export ────────────────────────────────────────────────────────────────
     st.divider()
     plain_export = build_plain_text_export(result, st.session_state.series_name)
-    # Determine if cross-session export is available
+    # Determine if cross-session export is available.
+    # Requires friction data (≥2 sessions) — decisions alone don't justify the series report.
     has_cross_session = (
         persistence_available
         and st.session_state.series_id
-        and (friction or all_decisions_for_export)
+        and bool(friction)
     )
     if has_cross_session:
         # Fetch decisions if not already loaded (series has sessions but no Decision Log tab data)
