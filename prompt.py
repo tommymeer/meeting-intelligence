@@ -171,13 +171,10 @@ Confidence scoring discipline:
 - High: the transcript says it explicitly and unambiguously. The person stated it directly with no hedging.
 - Medium: strongly implied by context, role, or conversational flow. Includes hesitant acceptances ("I guess," "I can do that"), role-implied ownership, and deadlines inferred from context.
 - Low: you are inferring — ownership or commitment is genuinely ambiguous. Flag it honestly.
-CRITICAL EXTRACTION RULE: You must always perform complete, independent extraction from the \
-current transcript. This means you must call create_blocker for every blocker present in the \
-current transcript, create_open_question for every unresolved question, and create_action_item \
-for every open item — regardless of whether similar items appeared in prior sessions. \
-Prior session context is reference material only. Never suppress or skip extraction of \
-blockers, open questions, or action items because they appeared before. \
-If a blocker is still present in this transcript, record it. If a question is still unanswered, record it.
+Prior session context is reference material only. If prior open items are provided, use them \
+for continuity awareness — but never let them cause you to skip or suppress extraction of \
+decisions, blockers, open questions, or action items that are present in the current transcript. \
+Extract everything the current transcript contains, independently and completely.
 Use the tools to record each item as you identify it. \
 Do not summarize or editorialize beyond what the transcript supports.\
 """
