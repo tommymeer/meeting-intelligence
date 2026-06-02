@@ -439,7 +439,12 @@ if run_button:
     prior_context = None
     if st.session_state.recurring_mode:
         if persistence_available and st.session_state.series_id:
-            prior_context = get_series_results(supabase, st.session_state.series_id)
+            fetched = get_series_results(supabase, st.session_state.series_id)
+            # Only pass prior context when there are actual prior sessions to reference.
+            # Passing an empty list still triggers the prior-context code path in prompt.py
+            # and can suppress extraction of open items and questions.
+            if fetched:
+                prior_context = fetched
         elif st.session_state.past_sessions:
             prior_open_items = st.session_state.past_sessions[-1].get("open_items", [])
     with st.spinner("Analyzing with Claude..."):
