@@ -192,7 +192,7 @@ def build_cross_session_export(
         if rb:
             lines.append("\n## RECURRING BLOCKERS")
             for b in rb:
-                lines.append(f"• {b['description']} (appeared in {b['seen_in_sessions']} sessions)")
+                lines.append(f"• {b['description']} ({b['seen_in_sessions']})")
         oi = friction.get("overdue_open_items", [])
         if oi:
             lines.append("\n## OVERDUE OPEN ITEMS")
@@ -204,7 +204,7 @@ def build_cross_session_export(
         if rq:
             lines.append("\n## PERSISTENTLY UNRESOLVED QUESTIONS")
             for q in rq:
-                lines.append(f"• {q['question']} (unresolved across {q['seen_in_sessions']} sessions)")
+                lines.append(f"• {q['question']} ({q['seen_in_sessions']})")
         if not rb and not oi and not rq:
             lines.append("\nNo recurring friction patterns detected across sessions.")
     # ── Decision Log ─────────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ if st.session_state.last_result:
                     blocker_display[key] = b.get("description", key)
                     seen.add(key)
         recurring_blockers = [
-            {"description": blocker_display[k], "seen_in_sessions": v}
+            {"description": blocker_display[k], "seen_in_sessions": f"appeared in {v} sessions"}
             for k, v in blocker_counter.items() if v >= 2
         ]
         question_counter: Counter = Counter()
@@ -510,27 +510,55 @@ if st.session_state.last_result:
                     question_display[key] = q.get("question", key)
                     seen.add(key)
         recurring_questions = [
-            {"question": question_display[k], "seen_in_sessions": v}
+            {"question": question_display[k], "seen_in_sessions": f"appeared in {v} sessions"}
             for k, v in question_counter.items() if v >= 2
         ]
-        if recurring_blockers or recurring_questions:
+        # In-memory fallback: null-owner decisions (no Supabase date data available)
+        _TBD = {"tbd", "tbd.", "n/a", "unknown", "unassigned", ""}
+        null_owner_count = sum(
+            1 for sess in all_sessions
+            for d in sess.get("decisions", [])
+            if (d.get("owner") or "").strip().lower() in _TBD
+        )
+        n_rb = len(recurring_blockers)
+        n_rq = len(recurring_questions)
+        if recurring_blockers or recurring_questions or null_owner_count:
             friction = {
                 "recurring_blockers": recurring_blockers,
                 "overdue_open_items": [],
                 "recurring_open_questions": recurring_questions,
-                "execution_debt_score": len(recurring_blockers) + len(recurring_questions),
+                "execution_debt_score": (n_rb * 2) + (n_rq * 2) + null_owner_count,
+                "debt_signals": {
+                    "null_owner_decisions": null_owner_count,
+                    "persistent_blockers":  n_rb,
+                    "recurring_questions":  n_rq,
+                    "overdue_items":        0,
+                },
             }
     if friction:
         debt = friction.get("execution_debt_score", 0)
         debt_icon = "🔴" if debt >= 8 else "🟡" if debt >= 4 else "🟢"
         st.subheader(f"⚠️ Organizational Friction Report — Execution Debt: {debt_icon} {debt}")
+        signals = friction.get("debt_signals", {})
+        if signals:
+            signal_parts = []
+            if signals.get("persistent_blockers"):
+                signal_parts.append(f"{signals['persistent_blockers']} persistent blocker{'s' if signals['persistent_blockers'] != 1 else ''}")
+            if signals.get("recurring_questions"):
+                signal_parts.append(f"{signals['recurring_questions']} recurring question{'s' if signals['recurring_questions'] != 1 else ''}")
+            if signals.get("null_owner_decisions"):
+                signal_parts.append(f"{signals['null_owner_decisions']} unowned decision{'s' if signals['null_owner_decisions'] != 1 else ''}")
+            if signals.get("overdue_items"):
+                signal_parts.append(f"{signals['overdue_items']} overdue item{'s' if signals['overdue_items'] != 1 else ''}")
+            if signal_parts:
+                st.caption("Driven by: " + ", ".join(signal_parts))
         rb = friction.get("recurring_blockers", [])
         oi = friction.get("overdue_open_items", [])
         rq = friction.get("recurring_open_questions", [])
         if rb:
             st.markdown("**🔁 Recurring Blockers**")
             for b in rb:
-                st.markdown(f"- {b['description']} *(appeared in {b['seen_in_sessions']} sessions)*")
+                st.markdown(f"- {b['description']} *({b['seen_in_sessions']})*")
         if oi:
             st.markdown("**📅 Overdue Open Items**")
             for item in oi:
@@ -542,7 +570,7 @@ if st.session_state.last_result:
         if rq:
             st.markdown("**❓ Persistently Unresolved Questions**")
             for q in rq:
-                st.markdown(f"- {q['question']} *(unresolved across {q['seen_in_sessions']} sessions)*")
+                st.markdown(f"- {q['question']} *({q['seen_in_sessions']})*")
         if not rb and not oi and not rq:
             st.success("No recurring friction patterns detected across sessions.")
         st.divider()
