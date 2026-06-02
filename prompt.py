@@ -1,12 +1,9 @@
 """
 prompt.py — Reasoning layer for Meeting Intelligence.
-
 Constructs the Claude prompt from preprocessed transcript data and calls
 the Anthropic API using structured tool use. Claude calls tools to build
 output incrementally rather than returning a single prose response.
-
 No file I/O. No Streamlit. Pure API logic.
-
 Tool schema:
   create_decision(description, owner, confidence)
   create_action_item(task, owner, deadline, confidence)
@@ -14,12 +11,8 @@ Tool schema:
   create_open_question(question, why_it_matters)
   draft_followup(email_text)
 """
-
 import anthropic
-
-
 # ── Tool definitions ───────────────────────────────────────────────────────────
-
 TOOLS = [
     {
         "name": "create_decision",
@@ -158,20 +151,15 @@ TOOLS = [
         },
     },
 ]
-
-
 # ── Prompt construction ────────────────────────────────────────────────────────
-
 def build_system_prompt() -> str:
     return """\
 You are an expert Chief of Staff and operational analyst. Your job is to extract \
 structured intelligence from meeting transcripts with precision and judgment.
-
 You have been given a preprocessed meeting transcript along with pre-extracted signals: \
 commitment phrases, decision signals, and questions flagged by a deterministic preprocessing layer. \
 Use these signals as starting points — do not treat them as exhaustive. \
 The preprocessing layer catches explicit language; you catch meaning.
-
 Your core judgment calls:
 - A DECISION is something resolved, not just discussed. "We should probably..." is not a decision. \
 "We're going with Vendor A" is.
@@ -179,16 +167,20 @@ Your core judgment calls:
 with the task clearly described — do not fabricate an owner.
 - A BLOCKER is something that could slow or prevent execution, even if no one called it that explicitly.
 - An OPEN QUESTION was raised and not answered. Rhetorical questions and answered questions don't count.
-
 Confidence scoring discipline:
 - High: the transcript says it explicitly and unambiguously. The person stated it directly with no hedging.
 - Medium: strongly implied by context, role, or conversational flow. Includes hesitant acceptances ("I guess," "I can do that"), role-implied ownership, and deadlines inferred from context.
 - Low: you are inferring — ownership or commitment is genuinely ambiguous. Flag it honestly.
-
+CRITICAL EXTRACTION RULE: You must always perform complete, independent extraction from the \
+current transcript. This means you must call create_blocker for every blocker present in the \
+current transcript, create_open_question for every unresolved question, and create_action_item \
+for every open item — regardless of whether similar items appeared in prior sessions. \
+Prior session context is reference material only. Never suppress or skip extraction of \
+blockers, open questions, or action items because they appeared before. \
+If a blocker is still present in this transcript, record it. If a question is still unanswered, record it.
 Use the tools to record each item as you identify it. \
 Do not summarize or editorialize beyond what the transcript supports.\
 """
-
 
 def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
     meta = preprocessed.get("metadata", {})
@@ -196,16 +188,13 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
     decision_signals = preprocessed.get("decision_signals", [])
     questions = preprocessed.get("questions", [])
     normalized_text = preprocessed.get("normalized_text", "")
-
     lines = []
-
     # Meeting metadata
     lines.append("## MEETING METADATA")
     lines.append(f"Title: {meta.get('title') or 'Not detected'}")
     lines.append(f"Date: {meta.get('date') or 'Not detected'}")
     lines.append(f"Attendees: {meta.get('attendees_raw') or 'Not detected'}")
     lines.append("")
-
     # Preprocessed signals
     if decision_signals:
         lines.append("## DECISION SIGNALS (flagged by preprocessing)")
@@ -213,48 +202,43 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
         for i, s in enumerate(decision_signals[:20], 1):
             lines.append(f"{i}. {s['text']}")
         lines.append("")
-
     if commitments:
         lines.append("## COMMITMENT SIGNALS (flagged by preprocessing)")
         lines.append("These sentences contain language associated with assignments or commitments.")
         for i, s in enumerate(commitments[:30], 1):
             lines.append(f"{i}. {s['text']}")
         lines.append("")
-
     if questions:
         lines.append("## QUESTIONS FLAGGED BY PREPROCESSING")
         lines.append("Evaluate which of these remain unresolved in the transcript.")
         for i, q in enumerate(questions[:20], 1):
             lines.append(f"{i}. {q}")
         lines.append("")
-
     # Prior open items for recurring mode
     if prior_open_items:
-        lines.append("## OPEN ITEMS FROM LAST SESSION (recurring meeting mode)")
+        lines.append("## OPEN ITEMS FROM PRIOR SESSION (recurring meeting — reference only)")
         lines.append(
-            "For each item below, assess whether it was resolved, still open, or escalated "
-            "based on the current transcript. Surface still-open items in your analysis."
+            "These are carried-forward items from the previous session, provided for continuity tracking. "
+            "They are REFERENCE CONTEXT ONLY — do not let them suppress or replace your extraction from "
+            "the current transcript. Your job is still to extract all decisions, blockers, open questions, "
+            "and action items present in the current transcript independently and completely. "
+            "If a prior item appears resolved in this transcript, you may omit it from open items. "
+            "If it is still active or escalated, record it again — it belongs in this session's output."
         )
         for i, item in enumerate(prior_open_items, 1):
             owner = item.get("owner", "Unassigned")
             deadline = item.get("deadline", "No deadline")
             lines.append(f"{i}. {item.get('task', '')} — {owner} — {deadline}")
         lines.append("")
-
     # Full transcript
     lines.append("## TRANSCRIPT")
     lines.append(normalized_text)
-
     return '\n'.join(lines)
-
-
 # ── Response parsing ───────────────────────────────────────────────────────────
-
 def parse_tool_calls(response) -> dict:
     """
     Walk the response content blocks and assemble structured output
     from tool use calls.
-
     Returns the five-section dict that app.py renders.
     """
     result = {
@@ -265,21 +249,17 @@ def parse_tool_calls(response) -> dict:
         "followup_email": "",
         "still_open": [],
     }
-
     for block in response.content:
         if block.type != "tool_use":
             continue
-
         name = block.name
         inp = block.input
-
         if name == "create_decision":
             result["decisions"].append({
                 "description": inp.get("description", ""),
                 "owner": inp.get("owner"),
                 "confidence": inp.get("confidence", "Low"),
             })
-
         elif name == "create_action_item":
             result["open_items"].append({
                 "task": inp.get("task", ""),
@@ -287,24 +267,19 @@ def parse_tool_calls(response) -> dict:
                 "deadline": inp.get("deadline"),
                 "confidence": inp.get("confidence", "Low"),
             })
-
         elif name == "create_blocker":
             result["blockers"].append({
                 "description": inp.get("description", ""),
                 "severity": inp.get("severity", "Medium"),
             })
-
         elif name == "create_open_question":
             result["open_questions"].append({
                 "question": inp.get("question", ""),
                 "why_it_matters": inp.get("why_it_matters", ""),
             })
-
         elif name == "draft_followup":
             result["followup_email"] = inp.get("email_text", "")
-
     return result
-
 
 def resolve_still_open(result: dict, prior_open_items: list) -> dict:
     """
@@ -314,9 +289,7 @@ def resolve_still_open(result: dict, prior_open_items: list) -> dict:
     """
     if not prior_open_items:
         return result
-
     current_tasks = [item["task"].lower() for item in result.get("open_items", [])]
-
     def is_resolved(prior_task: str) -> bool:
         prior_tokens = set(prior_task.lower().split())
         for current in current_tasks:
@@ -325,18 +298,14 @@ def resolve_still_open(result: dict, prior_open_items: list) -> dict:
             if len(prior_tokens) > 0 and len(overlap) / len(prior_tokens) > 0.4:
                 return False
         return True
-
     still_open = []
     for item in prior_open_items:
         if not is_resolved(item.get("task", "")):
             still_open.append(item)
-
     result["still_open"] = still_open
     return result
 
-
 # ── Main entry point ───────────────────────────────────────────────────────────
-
 def run_meeting_intelligence(
     preprocessed: dict,
     api_key: str,
@@ -360,14 +329,10 @@ def run_meeting_intelligence(
                     flattened.append(item)
                     seen.add(key)
         prior_open_items = flattened
-
     prior_open_items = prior_open_items or []
-
     client = anthropic.Anthropic(api_key=api_key)
-
     system_prompt = build_system_prompt()
     user_prompt = build_user_prompt(preprocessed, prior_open_items)
-
     # ── Pass 1: extraction ─────────────────────────────────────────────────────
     try:
         response = client.messages.create(
@@ -388,48 +353,36 @@ def run_meeting_intelligence(
         return {}, f"API error {e.status_code}: {e.message}"
     except Exception as e:
         return {}, f"Unexpected error: {e}"
-
     result = parse_tool_calls(response)
-
     # ── Pass 2: force draft_followup ───────────────────────────────────────────
     decisions_text = "\n".join(
         f"- {d['description']} (Owner: {d.get('owner') or 'Unassigned'})"
         for d in result["decisions"]
     ) or "None identified."
-
     open_items_text = "\n".join(
         f"- {i['task']} (Owner: {i.get('owner') or 'Unassigned'}, Deadline: {i.get('deadline') or 'None'})"
         for i in result["open_items"]
     ) or "None identified."
-
     blockers_text = "\n".join(
         f"- [{b['severity']}] {b['description']}"
         for b in result["blockers"]
     ) or "None identified."
-
     questions_text = "\n".join(
         f"- {q['question']}"
         for q in result["open_questions"]
     ) or "None identified."
-
     followup_prompt = f"""You are drafting a follow-up email for a meeting. \
 Use the structured analysis below to write a complete, ready-to-send email.
-
 DECISIONS MADE:
 {decisions_text}
-
 OPEN ITEMS:
 {open_items_text}
-
 BLOCKERS:
 {blockers_text}
-
 UNRESOLVED QUESTIONS:
 {questions_text}
-
 Draft a professional but direct follow-up email that covers all of the above. \
 Include a subject line. Keep it actionable and concise."""
-
     try:
         followup_response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -446,8 +399,6 @@ Include a subject line. Keep it actionable and concise."""
                 break
     except Exception:
         pass  # follow-up email is best-effort; don't fail the whole run
-
     if prior_open_items:
         result = resolve_still_open(result, prior_open_items)
-
     return result, None
