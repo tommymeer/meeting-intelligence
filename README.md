@@ -76,7 +76,7 @@ Layer 3 — Persistence and Cross-Session Analysis (storage.py)
 ### Installation
 
 ```bash
-git clone https://github.com/your-username/meeting-intelligence
+git clone https://github.com/tommymeer/meeting-intelligence
 cd meeting-intelligence
 pip install -r requirements.txt
 ```
