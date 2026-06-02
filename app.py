@@ -380,6 +380,7 @@ st.subheader("Options")
 st.session_state.recurring_mode = st.toggle(
     "Recurring meeting mode",
     value=st.session_state.recurring_mode,
+    key="recurring_mode_toggle",
     help=(
         "Tracks open items across sessions and surfaces what keeps getting left unresolved. "
         "Requires a named meeting series for cross-session persistence."
