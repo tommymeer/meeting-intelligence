@@ -171,10 +171,6 @@ Confidence scoring discipline:
 - High: the transcript says it explicitly and unambiguously. The person stated it directly with no hedging.
 - Medium: strongly implied by context, role, or conversational flow. Includes hesitant acceptances ("I guess," "I can do that"), role-implied ownership, and deadlines inferred from context.
 - Low: you are inferring — ownership or commitment is genuinely ambiguous. Flag it honestly.
-Prior session context is reference material only. If prior open items are provided, use them \
-for continuity awareness — but never let them cause you to skip or suppress extraction of \
-decisions, blockers, open questions, or action items that are present in the current transcript. \
-Extract everything the current transcript contains, independently and completely.
 Use the tools to record each item as you identify it. \
 Do not summarize or editorialize beyond what the transcript supports.\
 """
@@ -213,14 +209,10 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
         lines.append("")
     # Prior open items for recurring mode
     if prior_open_items:
-        lines.append("## OPEN ITEMS FROM PRIOR SESSION (recurring meeting — reference only)")
+        lines.append("## OPEN ITEMS FROM LAST SESSION (recurring meeting mode)")
         lines.append(
-            "These are carried-forward items from the previous session, provided for continuity tracking. "
-            "They are REFERENCE CONTEXT ONLY — do not let them suppress or replace your extraction from "
-            "the current transcript. Your job is still to extract all decisions, blockers, open questions, "
-            "and action items present in the current transcript independently and completely. "
-            "If a prior item appears resolved in this transcript, you may omit it from open items. "
-            "If it is still active or escalated, record it again — it belongs in this session's output."
+            "For each item below, assess whether it was resolved, still open, or escalated "
+            "based on the current transcript. Surface still-open items in your analysis."
         )
         for i, item in enumerate(prior_open_items, 1):
             owner = item.get("owner", "Unassigned")
