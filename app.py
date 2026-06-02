@@ -514,7 +514,7 @@ if st.session_state.last_result:
             for k, v in question_counter.items() if v >= 2
         ]
         # In-memory fallback: null-owner decisions (no Supabase date data available)
-        _TBD = {"tbd", "tbd.", "n/a", "unknown", "unassigned", ""}
+        _TBD = {"tbd", "tbd.", "n/a", "unknown", "unassigned", "null", ""}
         null_owner_count = sum(
             1 for sess in all_sessions
             for d in sess.get("decisions", [])
