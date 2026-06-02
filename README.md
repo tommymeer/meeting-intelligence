@@ -159,6 +159,8 @@ At hundreds of concurrent users, this would require a proper backend with queuin
 - **Single-threaded** — not designed for high concurrency
 - **No integrations** — copy-paste only
 - **Decision Log dates** — reflect run date, not meeting date
+- **Incomplete category extraction** — Certain transcript structures can occasionally produce incomplete extraction — for example, decisions surfaced correctly while blockers or action items are underrepresented. A coverage detection layer flags these cases to the user rather than presenting incomplete output silently. The root cause is not fully characterized; contributing factors may include transcript structure, model attention allocation, or prompt design.
+
 
 ---
 
