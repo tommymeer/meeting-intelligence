@@ -388,7 +388,7 @@ def run_meeting_intelligence(
             max_tokens=8192,
             system=system_prompt,
             tools=TOOLS,
-            tool_choice={"type": "auto"},
+            tool_choice={"type": "any"},
             messages=[
                 {"role": "user", "content": user_prompt}
             ],
