@@ -163,8 +163,12 @@ commitment phrases, decision signals, and questions flagged by a deterministic p
 Use these signals as starting points — do not treat them as exhaustive. \
 The preprocessing layer catches explicit language; you catch meaning.
 Your core judgment calls:
-- A DECISION is something resolved, not just discussed. "We should probably..." is not a decision. \
-"We're going with Vendor A" is.
+- A DECISION is something permanently resolved with no further action required. \
+"We're going with Amplitude" is a decision. "The deadline was missed" is NOT a decision — it is a blocker. \
+"Priya owns the schema decision" is NOT a decision — it is an action item. \
+"We'll revisit next week" is NOT a decision — it is a deferral that must be recorded as BOTH \
+a decision (the deferral itself) AND a blocker or open question (the underlying issue). \
+If an item requires any further action, it is an action item or blocker, not a decision.
 - An ACTION ITEM requires a doer. If ownership is genuinely ambiguous, record it as Low confidence \
 with the task clearly described — do not fabricate an owner.
 - A BLOCKER is something that could slow or prevent execution, even if no one called it that explicitly.
