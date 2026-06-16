@@ -13,7 +13,9 @@ Tool schema:
 """
 import anthropic
 # ── Tool definitions ───────────────────────────────────────────────────────────
-TOOLS = [
+# EXTRACTION_TOOLS: used in Pass 1 only — draft_followup intentionally excluded
+# so Claude cannot escape extraction by calling the followup tool early.
+EXTRACTION_TOOLS = [
     {
         "name": "create_decision",
         "description": (
@@ -130,29 +132,35 @@ TOOLS = [
             "required": ["question", "why_it_matters"],
         },
     },
-    {
-        "name": "draft_followup",
-        "description": (
-            "Draft a follow-up email summarizing the meeting. Call this exactly once, "
-            "after all decisions, action items, blockers, and open questions have been recorded. "
-            "The email should be ready to send with minimal editing."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "email_text": {
-                    "type": "string",
-                    "description": (
-                        "Plain text follow-up email. Include: subject line, brief context sentence, "
-                        "decisions made, open items with owners and deadlines, unresolved questions, "
-                        "and a clear next step or call to action. Professional but not stiff."
-                    ),
-                },
-            },
-            "required": ["email_text"],
-        },
-    },
 ]
+
+# FOLLOWUP_TOOL: used in Pass 2 only
+FOLLOWUP_TOOL = {
+    "name": "draft_followup",
+    "description": (
+        "Draft a follow-up email summarizing the meeting. Call this exactly once, "
+        "after all decisions, action items, blockers, and open questions have been recorded. "
+        "The email should be ready to send with minimal editing."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "email_text": {
+                "type": "string",
+                "description": (
+                    "Plain text follow-up email. Include: subject line, brief context sentence, "
+                    "decisions made, open items with owners and deadlines, unresolved questions, "
+                    "and a clear next step or call to action. Professional but not stiff."
+                ),
+            },
+        },
+        "required": ["email_text"],
+    },
+}
+
+# Combined list for any backward-compatibility references
+TOOLS = EXTRACTION_TOOLS + [FOLLOWUP_TOOL]
+
 # ── Prompt construction ────────────────────────────────────────────────────────
 def build_system_prompt() -> str:
     return """\
@@ -179,7 +187,6 @@ Confidence scoring discipline:
 - Low: you are inferring — ownership or commitment is genuinely ambiguous. Flag it honestly.
 Use the tools to record each item as you identify it. \
 Do not summarize or editorialize beyond what the transcript supports.
-
 Critical: deferrals and unresolved items are not the same as resolution.
 - If a topic is deferred ("we'll revisit next week", "same decision: discuss later"), \
 record the deferral as a decision AND separately record the underlying issue as a blocker \
@@ -221,7 +228,7 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
         "- create_blocker: for everything slowing or preventing execution, even if not named as a blocker explicitly\n"
         "- create_open_question: for every question raised but not answered, including deflected ones\n"
         "An empty category is only correct if you actively looked and found nothing — not if you stopped early. "
-        "Do not call draft_followup until you have worked through all four tool types."
+        "The draft_followup tool is not available in this pass — focus entirely on extraction."
     )
     lines.append("")
     # Meeting metadata
@@ -261,10 +268,7 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
             deadline = item.get("deadline", "No deadline")
             lines.append(f"{i}. {item.get('task', '')} — {owner} — {deadline}")
         lines.append("")
-    # Low-signal warning — injected when preprocessing found few explicit signals.
-    # A sparse signal list means the transcript lacks explicit commitment/decision
-    # language, not that it lacks content. Claude must read the full transcript
-    # directly rather than anchoring on the short signal list.
+    # Low-signal warning
     total_signals = len(commitments) + len(decision_signals) + len(questions)
     if total_signals < 4:
         lines.append("## ⚠ LOW-SIGNAL TRANSCRIPT NOTICE")
@@ -286,6 +290,7 @@ def build_user_prompt(preprocessed: dict, prior_open_items: list) -> str:
     lines.append("## TRANSCRIPT")
     lines.append(normalized_text)
     return '\n'.join(lines)
+
 # ── Response parsing ───────────────────────────────────────────────────────────
 def parse_tool_calls(response) -> dict:
     """
@@ -371,7 +376,6 @@ def run_meeting_intelligence(
     `prior_open_items` (flat list) is still accepted for in-session recurring mode.
     """
     if prior_context and not prior_open_items:
-        # Flatten open_items from all prior sessions; deduplicate by task text
         seen: set[str] = set()
         flattened: list[dict] = []
         for session in prior_context:
@@ -386,12 +390,14 @@ def run_meeting_intelligence(
     system_prompt = build_system_prompt()
     user_prompt = build_user_prompt(preprocessed, prior_open_items)
     # ── Pass 1: extraction ─────────────────────────────────────────────────────
+    # Uses EXTRACTION_TOOLS only — draft_followup excluded so Claude cannot
+    # terminate extraction early by calling the followup tool.
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=8192,
             system=system_prompt,
-            tools=TOOLS,
+            tools=EXTRACTION_TOOLS,
             tool_choice={"type": "any"},
             messages=[
                 {"role": "user", "content": user_prompt}
@@ -406,9 +412,7 @@ def run_meeting_intelligence(
     except Exception as e:
         return {}, f"Unexpected error: {e}"
     result = parse_tool_calls(response)
-    # Guard: if all four extraction categories are empty, Claude returned no tool calls
-    # (possible with tool_choice auto). Surface an error rather than saving an empty
-    # session to Supabase, which would corrupt the series history.
+    # Guard: if all four extraction categories are empty, surface an error
     if (
         not result["decisions"]
         and not result["open_items"]
@@ -421,8 +425,6 @@ def run_meeting_intelligence(
             "Please try again — if the problem persists, check that the transcript contains sufficient content."
         )
     # Low-coverage flag: decisions extracted but blockers and open items both empty.
-    # This is the category collapse pattern — model terminated after decisions.
-    # Flag for UI warning; session still saves (partial data is better than no data).
     result["low_coverage"] = (
         bool(result["decisions"])
         and not result["open_items"]
@@ -461,7 +463,7 @@ Include a subject line. Keep it actionable and concise."""
         followup_response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2048,
-            tools=TOOLS,
+            tools=[FOLLOWUP_TOOL],
             tool_choice={"type": "tool", "name": "draft_followup"},
             messages=[
                 {"role": "user", "content": followup_prompt}
